@@ -328,6 +328,10 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url); const path = url.pathname;
     if (path === '/favicon.ico') return new Response(null, { status: 204 });
+    if (path === '/api/debug-secret') {
+      const v = env.ACCOUNTING_CLIENT_ID || '';
+      return json({ length: v.length, first4: v.slice(0,4), last4: v.slice(-4), hasWhitespace: /\s/.test(v) });
+    }
     if (path === '/api/setup' && request.method === 'POST') return apiSetup(env, request);
     if (path === '/api/login' && request.method === 'POST') return apiLogin(env, request);
     if (path === '/api/logout' && request.method === 'POST') return apiLogout();
