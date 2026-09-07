@@ -1,0 +1,15 @@
+name = "guncotton-dashboard"
+main = "worker.js"
+compatibility_date = "2026-06-01"
+
+rules = [
+  { type = "Text", globs = ["**/*.html"], fallthrough = true }
+]
+
+[[kv_namespaces]]
+binding = "TOKENS"
+# id is intentionally omitted so the first Cloudflare deploy auto-provisions
+# the namespace. After the first successful deploy, read the namespace id
+# from the Cloudflare dashboard (Storage & Databases -> KV) and paste it here
+# as: id = "xxxxxxxx", then push again, so future deploys reuse the same
+# namespace instead of creating a new one.

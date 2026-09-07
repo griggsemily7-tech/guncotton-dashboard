@@ -1,0 +1,195 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Venue Dashboard</title>
+<style>
+  :root{--accent:#3b82f6;--bg:#0f1720;--card:#1b2530;--muted:#9aa5b1;--good:#22c55e;--bad:#f87171;}
+  *{box-sizing:border-box}
+  body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:#eee;margin:0;padding:20px}
+  h1{font-size:20px;margin:0 0 4px}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:16px}
+  .tabs{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+  .tab{padding:8px 14px;border-radius:8px;background:var(--card);cursor:pointer;font-size:14px}
+  .tab.active{background:var(--accent)}
+  select,button,input{font-family:inherit}
+  .banner{background:#7c2d12;padding:10px 14px;border-radius:8px;margin-bottom:14px;font-size:13px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px}
+  .mcard{background:var(--card);border-radius:12px;padding:16px}
+  .mcard .label{font-size:12px;color:var(--muted);letter-spacing:.05em;text-transform:uppercase}
+  .mcard .value{font-size:26px;font-weight:700;margin:6px 0}
+  .mcard .desc{font-size:12px;color:var(--muted)}
+  .notconfigured{color:var(--muted);font-style:italic}
+  .conn-row{display:flex;justify-content:space-between;align-items:center;background:var(--card);padding:14px;border-radius:10px;margin-bottom:10px}
+  .pill{padding:4px 10px;border-radius:999px;font-size:12px}
+  .pill.on{background:#14532d;color:var(--good)}
+  .pill.off{background:#374151;color:var(--muted)}
+  a.btn,button.btn{background:var(--accent);color:#fff;padding:8px 14px;border-radius:8px;text-decoration:none;border:none;cursor:pointer;font-size:14px}
+  .box{background:var(--card);border-radius:12px;padding:20px;max-width:520px}
+  input[type=text],input[type=color]{width:100%;padding:8px;border-radius:6px;border:1px solid #34404c;background:var(--bg);color:#eee;margin:6px 0 14px}
+  .hint{color:var(--muted);font-size:13px;margin-bottom:12px}
+</style>
+</head>
+<body>
+<h1 id="venueName">Your venue</h1>
+<div class="sub">Your numbers · ex-GST</div>
+<div class="tabs">
+  <div class="tab active" data-tab="dashboard">Dashboard</div>
+  <div class="tab" data-tab="connections">Connections</div>
+  <div class="tab" data-tab="check">Check your numbers</div>
+  <div class="tab" data-tab="settings">Settings</div>
+</div>
+<div id="banner"></div>
+
+<div id="view-dashboard">
+  <select id="period" onchange="fetchData()">
+    <option value="week">This week</option>
+    <option value="lastweek">Last week</option>
+    <option value="month" selected>This month</option>
+    <option value="lastmonth">Last month</option>
+    <option value="fy">This financial year</option>
+    <option value="lastfy">Last financial year</option>
+  </select>
+  <div class="cards" id="cards"></div>
+</div>
+
+<div id="view-connections" style="display:none">
+  <div class="conn-row"><div><b>Xero</b> — every money figure<br><span class="hint" id="acc-detail">Not connected</span></div>
+    <div><span class="pill off" id="acc-pill">Not connected</span> <a class="btn" id="acc-btn" href="/auth/accounting/start">Connect</a></div></div>
+  <div class="conn-row"><div><b>Square</b> — transaction count<br><span class="hint">Requires a Production personal access token added as a Cloudflare secret (POS_API_TOKEN). Ask your AI to walk you through that step.</span></div>
+    <div><span class="pill off" id="pos-pill">Not connected</span></div></div>
+</div>
+
+<div id="view-check" style="display:none">
+  <div class="box">
+    <p>Open Xero and run your Profit and Loss for the same dates shown on the dashboard. Compare each figure to the cent. If anything is off, tell your AI which number and by how much — it works through the checklist (accounts mapped, dates, GST, missing channel) until it matches.</p>
+  </div>
+</div>
+
+<div id="view-settings" style="display:none">
+  <div class="box">
+    <label>Venue name</label>
+    <input type="text" id="set-name" placeholder="Your venue name">
+    <label>Accent colour</label>
+    <input type="color" id="set-color" value="#3b82f6">
+    <button class="btn" onclick="saveSettings()">Save</button>
+    <p style="margin-top:20px"><button class="btn" style="background:#374151" onclick="logout()">Log out</button></p>
+  </div>
+</div>
+
+<script>
+const METRICS = [
+  {key:'revenue', label:'Revenue', desc:'All trading income, ex-GST · from Xero'},
+  {key:'count', label:'Number of transactions', desc:'Completed transactions · from Square'},
+  {key:'acs', label:'Average customer spend', desc:'Revenue ÷ transactions'},
+  {key:'cogs', label:'Cost of goods', desc:'Cost of Sales accounts, ex-GST · from Xero'},
+  {key:'wagepct', label:'Wage %', desc:'(Wages + super) ÷ revenue · from Xero'},
+  {key:'overheads', label:'Overheads', desc:'Operating expenses excl. wages/super/COGS · from Xero'},
+  {key:'profit', label:'Profit', desc:'Revenue less COGS, wages+super, overheads'}
+];
+
+function fmtMoney(n){ return n==null ? null : '$'+n.toLocaleString(undefined,{maximumFractionDigits:0}); }
+function fmtPct(n){ return n==null ? null : (n*100).toFixed(1)+'%'; }
+
+function rangeFor(period){
+  const now = new Date();
+  const fmt = d => d.toISOString().slice(0,10);
+  const startOfWeek = (d,offsetWeeks=0) => { const x=new Date(d); const day=(x.getDay()+6)%7; x.setDate(x.getDate()-day+offsetWeeks*7); return x; };
+  if(period==='week'){ const s=startOfWeek(now); const e=new Date(s); e.setDate(e.getDate()+6); return {from:fmt(s),to:fmt(e)}; }
+  if(period==='lastweek'){ const s=startOfWeek(now,-1); const e=new Date(s); e.setDate(e.getDate()+6); return {from:fmt(s),to:fmt(e)}; }
+  if(period==='month'){ const s=new Date(now.getFullYear(),now.getMonth(),1); const e=now; return {from:fmt(s),to:fmt(e)}; }
+  if(period==='lastmonth'){ const s=new Date(now.getFullYear(),now.getMonth()-1,1); const e=new Date(now.getFullYear(),now.getMonth(),0); return {from:fmt(s),to:fmt(e)}; }
+  if(period==='fy'){ const y = now.getMonth()>=6?now.getFullYear():now.getFullYear()-1; return {from:y+'-07-01', to:fmt(now)}; }
+  if(period==='lastfy'){ const y = (now.getMonth()>=6?now.getFullYear():now.getFullYear()-1)-1; return {from:y+'-07-01', to:(y+1)+'-06-30'}; }
+  return {from:fmt(now),to:fmt(now)};
+}
+
+async function fetchData(){
+  const period = document.getElementById('period').value;
+  const r = rangeFor(period);
+  const url = '/api/metrics?cur='+r.from+':'+r.to;
+  const res = await fetch(url);
+  if(res.status===401){ location.reload(); return; }
+  const data = await res.json();
+  renderBanner(data);
+  renderCards(data);
+  renderConnections(data);
+}
+
+function renderBanner(data){
+  const b = document.getElementById('banner');
+  const accOk = data.sources.accounting.connected;
+  if(!accOk){ b.innerHTML = '<div class="banner">Unverified — connect Xero and reconcile your numbers to remove this banner.</div>'; }
+  else { b.innerHTML=''; }
+}
+
+function renderCards(data){
+  const cur = data.periods.cur || {};
+  const acc = cur.accounting, pos = cur.pos;
+  const revenue = acc ? acc.revenue : null;
+  const count = pos ? pos.count : null;
+  const acs = (revenue!=null && count!=null) ? (count===0 ? '—' : (revenue/count)) : null;
+  const cogs = acc ? acc.cogs : null;
+  const wagepct = (acc && revenue) ? (acc.wagesSuper/revenue) : null;
+  const overheads = acc ? acc.overheads : null;
+  const profit = acc ? (revenue - acc.cogs - acc.wagesSuper - acc.overheads) : null;
+
+  const vals = {
+    revenue: revenue==null?null:fmtMoney(revenue),
+    count: count==null?null:count.toLocaleString(),
+    acs: acs===null?null:(acs==='—'?'—':fmtMoney(acs)),
+    cogs: cogs==null?null:fmtMoney(cogs),
+    wagepct: wagepct==null?null:fmtPct(wagepct),
+    overheads: overheads==null?null:fmtMoney(overheads),
+    profit: profit==null?null:fmtMoney(profit)
+  };
+  const cardsEl = document.getElementById('cards');
+  cardsEl.innerHTML = METRICS.map(m=>{
+    const v = vals[m.key];
+    return '<div class="mcard"><div class="label">'+m.label+'</div>'+
+      (v==null ? '<div class="value notconfigured">Not configured</div>' : '<div class="value">'+v+'</div>')+
+      '<div class="desc">'+m.desc+'</div></div>';
+  }).join('');
+}
+
+function renderConnections(data){
+  const acc = data.sources.accounting, pos = data.sources.pos;
+  document.getElementById('acc-pill').textContent = acc.connected ? 'Connected' : 'Not connected';
+  document.getElementById('acc-pill').className = 'pill ' + (acc.connected?'on':'off');
+  document.getElementById('acc-detail').textContent = acc.connected ? ('Connected to '+(acc.org||'your organisation')+(acc.sandbox?' — DEMO COMPANY, reconnect to your live org':'')) : 'Not connected yet';
+  document.getElementById('acc-btn').style.display = acc.connected ? 'none':'inline-block';
+  document.getElementById('pos-pill').textContent = pos.connected ? 'Connected' : 'Not connected';
+  document.getElementById('pos-pill').className = 'pill ' + (pos.connected?'on':'off');
+}
+
+document.querySelectorAll('.tab').forEach(t=>{
+  t.onclick = ()=>{
+    document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+    t.classList.add('active');
+    ['dashboard','connections','check','settings'].forEach(v=>{
+      document.getElementById('view-'+v).style.display = (v===t.dataset.tab)?'block':'none';
+    });
+  };
+});
+
+function loadSettings(){
+  const name = localStorage.getItem('vd_name') || 'Your venue';
+  const color = localStorage.getItem('vd_color') || '#3b82f6';
+  document.getElementById('venueName').textContent = name;
+  document.getElementById('set-name').value = name;
+  document.getElementById('set-color').value = color;
+  document.documentElement.style.setProperty('--accent', color);
+}
+function saveSettings(){
+  localStorage.setItem('vd_name', document.getElementById('set-name').value || 'Your venue');
+  localStorage.setItem('vd_color', document.getElementById('set-color').value);
+  loadSettings();
+}
+async function logout(){ await fetch('/api/logout',{method:'POST'}); location.reload(); }
+
+loadSettings();
+fetchData();
+</script>
+</body>
+</html>
