@@ -332,6 +332,11 @@ export default {
       const v = env.ACCOUNTING_CLIENT_ID || '';
       return json({ length: v.length, first4: v.slice(0,4), last4: v.slice(-4), hasWhitespace: /\s/.test(v) });
     }
+    if (path === '/api/debug-authurl') {
+      const redirectUri = url.origin + '/auth/accounting/callback';
+      const p = new URLSearchParams({ response_type: 'code', client_id: env.ACCOUNTING_CLIENT_ID || '', redirect_uri: redirectUri, scope: XERO.scopes, state: 'debugtest' });
+      return json({ url: XERO.authorizeUrl + '?' + p.toString() });
+    }
     if (path === '/api/setup' && request.method === 'POST') return apiSetup(env, request);
     if (path === '/api/login' && request.method === 'POST') return apiLogin(env, request);
     if (path === '/api/logout' && request.method === 'POST') return apiLogout();
