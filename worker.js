@@ -232,7 +232,7 @@ async function squareCount(env, from, to) {
   const base = 'https://connect.squareup.com';
   let cursor = null, count = 0, iterations = 0;
   do {
-    const params = new URLSearchParams({ begin_time: from + 'T00:00:00Z', end_time: to + 'T23:59:59Z', sort_order: 'ASC' });
+    const params = new URLSearchParams({ begin_time: from + 'T00:00:00+10:00', end_time: to + 'T23:59:59+10:00', sort_order: 'ASC' });
     if (cursor) params.set('cursor', cursor);
     const res = await fetch(base + '/v2/payments?' + params.toString(), {
       headers: { Authorization: 'Bearer ' + env.POS_API_TOKEN, 'Square-Version': '2025-01-23' }
