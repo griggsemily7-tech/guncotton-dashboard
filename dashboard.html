@@ -112,7 +112,6 @@ async function fetchData(){
   const res = await fetch(url, {cache:'no-store'});
   if(res.status===401){ location.reload(); return; }
   const data = await res.json();
-  console.log('metrics response', data);
   renderBanner(data);
   renderCards(data);
   renderConnections(data);

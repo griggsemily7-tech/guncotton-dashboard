@@ -334,34 +334,6 @@ export default {
 
     const loggedIn = await isLoggedIn(request, env);
 
-    if (path === '/api/debug-secret') {
-      if (!loggedIn) return json({ error: 'auth' }, 401);
-      const v = env.ACCOUNTING_CLIENT_ID || '';
-      return json({ length: v.length, first4: v.slice(0,4), last4: v.slice(-4), hasWhitespace: /\s/.test(v) });
-    }
-    if (path === '/api/debug-authurl') {
-      if (!loggedIn) return json({ error: 'auth' }, 401);
-      const redirectUri = url.origin + '/auth/accounting/callback';
-      const p = new URLSearchParams({ response_type: 'code', client_id: env.ACCOUNTING_CLIENT_ID || '', redirect_uri: redirectUri, scope: XERO.scopes, state: 'debugtest' });
-      return json({ url: XERO.authorizeUrl + '?' + p.toString() });
-    }
-    if (path === '/api/debug-pl') {
-      if (!loggedIn) return json({ error: 'auth' }, 401);
-      const from = url.searchParams.get('from') || '2026-09-01';
-      const to = url.searchParams.get('to') || '2026-09-08';
-      try {
-        const token = await xeroRefresh(env);
-        const tenantId = await xeroTenantId(env);
-        const r = await fetch('https://api.xero.com/api.xro/2.0/Reports/ProfitAndLoss?fromDate=' + from + '&toDate=' + to,
-          { headers: { Authorization: 'Bearer ' + token, 'Xero-Tenant-Id': tenantId, Accept: 'application/json' } });
-        const data = await r.json();
-        const rows = (data.Reports && data.Reports[0] && data.Reports[0].Rows) || [];
-        const acc = { income: [], cogs: [], opex: [] };
-        walkPL(rows, acc);
-        return json(acc);
-      } catch (e) { return json({ error: String(e), status: e.status }, 500); }
-    }
-
     if (path === '/' || path === '/index.html') {
       if (loggedIn) return htmlResponse(dashboardHtml);
       return htmlResponse((await passcodeSet(env)) ? loginPage() : setupPage());
