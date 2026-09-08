@@ -94,7 +94,7 @@ function fmtPct(n){ return n==null ? null : (n*100).toFixed(1)+'%'; }
 
 function rangeFor(period){
   const now = new Date();
-  const fmt = d => d.toISOString().slice(0,10);
+  const fmt = d => d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
   const startOfWeek = (d,offsetWeeks=0) => { const x=new Date(d); const day=(x.getDay()+6)%7; x.setDate(x.getDate()-day+offsetWeeks*7); return x; };
   if(period==='week'){ const s=startOfWeek(now); const e=new Date(s); e.setDate(e.getDate()+6); return {from:fmt(s),to:fmt(e)}; }
   if(period==='lastweek'){ const s=startOfWeek(now,-1); const e=new Date(s); e.setDate(e.getDate()+6); return {from:fmt(s),to:fmt(e)}; }
