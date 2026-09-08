@@ -108,10 +108,11 @@ function rangeFor(period){
 async function fetchData(){
   const period = document.getElementById('period').value;
   const r = rangeFor(period);
-  const url = '/api/metrics?cur='+r.from+':'+r.to;
-  const res = await fetch(url);
+  const url = '/api/metrics?cur='+r.from+':'+r.to+'&_='+Date.now();
+  const res = await fetch(url, {cache:'no-store'});
   if(res.status===401){ location.reload(); return; }
   const data = await res.json();
+  console.log('metrics response', data);
   renderBanner(data);
   renderCards(data);
   renderConnections(data);
