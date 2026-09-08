@@ -328,9 +328,22 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url); const path = url.pathname;
     if (path === '/favicon.ico') return new Response(null, { status: 204 });
+    if (path === '/api/setup' && request.method === 'POST') return apiSetup(env, request);
+    if (path === '/api/login' && request.method === 'POST') return apiLogin(env, request);
+    if (path === '/api/logout' && request.method === 'POST') return apiLogout();
+
+    const loggedIn = await isLoggedIn(request, env);
+
     if (path === '/api/debug-secret') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
       const v = env.ACCOUNTING_CLIENT_ID || '';
       return json({ length: v.length, first4: v.slice(0,4), last4: v.slice(-4), hasWhitespace: /\s/.test(v) });
+    }
+    if (path === '/api/debug-authurl') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const redirectUri = url.origin + '/auth/accounting/callback';
+      const p = new URLSearchParams({ response_type: 'code', client_id: env.ACCOUNTING_CLIENT_ID || '', redirect_uri: redirectUri, scope: XERO.scopes, state: 'debugtest' });
+      return json({ url: XERO.authorizeUrl + '?' + p.toString() });
     }
     if (path === '/api/debug-pl') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
@@ -348,15 +361,6 @@ export default {
         return json(acc);
       } catch (e) { return json({ error: String(e), status: e.status }, 500); }
     }
-      const redirectUri = url.origin + '/auth/accounting/callback';
-      const p = new URLSearchParams({ response_type: 'code', client_id: env.ACCOUNTING_CLIENT_ID || '', redirect_uri: redirectUri, scope: XERO.scopes, state: 'debugtest' });
-      return json({ url: XERO.authorizeUrl + '?' + p.toString() });
-    }
-    if (path === '/api/setup' && request.method === 'POST') return apiSetup(env, request);
-    if (path === '/api/login' && request.method === 'POST') return apiLogin(env, request);
-    if (path === '/api/logout' && request.method === 'POST') return apiLogout();
-
-    const loggedIn = await isLoggedIn(request, env);
 
     if (path === '/' || path === '/index.html') {
       if (loggedIn) return htmlResponse(dashboardHtml);
