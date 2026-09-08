@@ -334,17 +334,6 @@ export default {
 
     const loggedIn = await isLoggedIn(request, env);
 
-    if (path === '/api/debug-square') {
-      if (!loggedIn) return json({ error: 'auth' }, 401);
-      try {
-        const hasToken = !!env.POS_API_TOKEN;
-        const tokenLen = (env.POS_API_TOKEN || '').length;
-        const res = await fetch('https://connect.squareup.com/v2/locations', { headers: { Authorization: 'Bearer ' + env.POS_API_TOKEN, 'Square-Version': '2025-01-23' } });
-        const body = await res.text();
-        return json({ hasToken, tokenLen, status: res.status, body: body.slice(0, 800) });
-      } catch (e) { return json({ error: String(e) }, 500); }
-    }
-
     if (path === '/' || path === '/index.html') {
       if (loggedIn) return htmlResponse(dashboardHtml);
       return htmlResponse((await passcodeSet(env)) ? loginPage() : setupPage());
