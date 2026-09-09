@@ -148,7 +148,7 @@ async function lastSync(env, source) { return await env.TOKENS.get('lastSync:' +
 const XERO = {
   authorizeUrl: 'https://login.xero.com/identity/connect/authorize',
   tokenUrl: 'https://identity.xero.com/connect/token',
-  scopes: 'offline_access accounting.reports.profitandloss.read accounting.settings.read'
+  scopes: 'offline_access accounting.reports.profitandloss.read accounting.settings.read payroll.employees.read payroll.payruns.read'
 };
 
 async function xeroRefresh(env) {
@@ -333,6 +333,19 @@ export default {
     if (path === '/api/logout' && request.method === 'POST') return apiLogout();
 
     const loggedIn = await isLoggedIn(request, env);
+
+    if (path === '/api/debug-payroll') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      try {
+        const token = await xeroRefresh(env);
+        const tenantId = await xeroTenantId(env);
+        const empRes = await fetch('https://api.xero.com/payroll.xro/1.0/Employees', { headers: { Authorization: 'Bearer ' + token, 'Xero-Tenant-Id': tenantId, Accept: 'application/json' } });
+        const empData = await empRes.json();
+        const runsRes = await fetch('https://api.xero.com/payroll.xro/1.0/PayRuns', { headers: { Authorization: 'Bearer ' + token, 'Xero-Tenant-Id': tenantId, Accept: 'application/json' } });
+        const runsData = await runsRes.json();
+        return json({ employeesStatus: empRes.status, employees: empData, payRunsStatus: runsRes.status, payRuns: runsData });
+      } catch (e) { return json({ error: String(e), status: e.status }, 500); }
+    }
 
     if (path === '/api/bepoz-raw' && request.method === 'POST') {
       const token = url.searchParams.get('token');
