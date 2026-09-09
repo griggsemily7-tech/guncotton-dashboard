@@ -3,9 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="mobile-web-app-capable" content="yes">
 <title>Venue Dashboard</title>
 <style>
-  :root{--accent:#3b82f6;--bg:#0f1720;--card:#1b2530;--muted:#9aa5b1;--good:#22c55e;--bad:#f87171;}
+  :root{--accent:#3b82f6;--bg:#0f1720;--card:#1b2530;--muted:#9aa5b1;--good:#22c55e;--bad:#f87171;--warn:#f59e0b;}
   *{box-sizing:border-box}
   body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:#eee;margin:0;padding:20px}
   h1{font-size:20px;margin:0 0 4px}
@@ -19,6 +22,8 @@
   .mcard{background:var(--card);border-radius:12px;padding:16px}
   .mcard .label{font-size:12px;color:var(--muted);letter-spacing:.05em;text-transform:uppercase}
   .mcard .value{font-size:26px;font-weight:700;margin:6px 0}
+  .mcard .value.warn{color:var(--warn)}
+  .mcard .value.alert{color:var(--bad)}
   .mcard .desc{font-size:12px;color:var(--muted)}
   .notconfigured{color:var(--muted);font-style:italic}
   .conn-row{display:flex;justify-content:space-between;align-items:center;background:var(--card);padding:14px;border-radius:10px;margin-bottom:10px}
@@ -74,6 +79,15 @@
     <label>Accent colour</label>
     <input type="color" id="set-color" value="#3b82f6">
     <button class="btn" onclick="saveSettings()">Save</button>
+    <hr style="border-color:#34404c;margin:20px 0">
+    <p style="color:var(--muted);font-size:13px;margin-bottom:4px">Targets — cards turn amber when crossed. Leave blank to disable.</p>
+    <label>Wage % target (amber above this)</label>
+    <input type="text" id="set-wagetarget" placeholder="e.g. 35">
+    <label>Cost of goods % target (amber above this)</label>
+    <input type="text" id="set-cogstarget" placeholder="e.g. 30">
+    <label>Minimum Profit % target (amber below this)</label>
+    <input type="text" id="set-profittarget" placeholder="e.g. 15">
+    <button class="btn" onclick="saveSettings()">Save targets</button>
     <p style="margin-top:20px"><button class="btn" style="background:#374151" onclick="logout()">Log out</button></p>
   </div>
 </div>
@@ -144,11 +158,22 @@ function renderCards(data){
     overheads: overheads==null?null:fmtMoney(overheads),
     profit: profit==null?null:fmtMoney(profit)
   };
+  const wageTarget = parseFloat(localStorage.getItem('vd_wagetarget'));
+  const cogsTarget = parseFloat(localStorage.getItem('vd_cogstarget'));
+  const profitTarget = parseFloat(localStorage.getItem('vd_profittarget'));
+  const cogsPct = (cogs!=null && revenue) ? (cogs/revenue*100) : null;
+  const profitPct = (profit!=null && revenue) ? (profit/revenue*100) : null;
+  const cls = {};
+  if (profit != null && profit < 0) cls.profit = 'alert';
+  else if (!isNaN(profitTarget) && profitPct != null && profitPct < profitTarget) cls.profit = 'warn';
+  if (!isNaN(wageTarget) && wagepct != null && wagepct !== '—' && (wagepct*100) > wageTarget) cls.wagepct = 'warn';
+  if (!isNaN(cogsTarget) && cogsPct != null && cogsPct > cogsTarget) cls.cogs = 'warn';
   const cardsEl = document.getElementById('cards');
   cardsEl.innerHTML = METRICS.map(m=>{
     const v = vals[m.key];
+    const cssClass = cls[m.key] ? ' ' + cls[m.key] : '';
     return '<div class="mcard"><div class="label">'+m.label+'</div>'+
-      (v==null ? '<div class="value notconfigured">Not configured</div>' : '<div class="value">'+v+'</div>')+
+      (v==null ? '<div class="value notconfigured">Not configured</div>' : '<div class="value'+cssClass+'">'+v+'</div>')+
       '<div class="desc">'+m.desc+'</div></div>';
   }).join('');
 }
@@ -180,11 +205,18 @@ function loadSettings(){
   document.getElementById('set-name').value = name;
   document.getElementById('set-color').value = color;
   document.documentElement.style.setProperty('--accent', color);
+  document.getElementById('set-wagetarget').value = localStorage.getItem('vd_wagetarget') || '';
+  document.getElementById('set-cogstarget').value = localStorage.getItem('vd_cogstarget') || '';
+  document.getElementById('set-profittarget').value = localStorage.getItem('vd_profittarget') || '';
 }
 function saveSettings(){
   localStorage.setItem('vd_name', document.getElementById('set-name').value || 'Your venue');
   localStorage.setItem('vd_color', document.getElementById('set-color').value);
+  localStorage.setItem('vd_wagetarget', document.getElementById('set-wagetarget').value.trim());
+  localStorage.setItem('vd_cogstarget', document.getElementById('set-cogstarget').value.trim());
+  localStorage.setItem('vd_profittarget', document.getElementById('set-profittarget').value.trim());
   loadSettings();
+  fetchData();
 }
 async function logout(){ await fetch('/api/logout',{method:'POST'}); location.reload(); }
 
