@@ -334,6 +334,23 @@ export default {
 
     const loggedIn = await isLoggedIn(request, env);
 
+    if (path === '/api/bepoz-raw' && request.method === 'POST') {
+      const token = url.searchParams.get('token');
+      if (!env.BEPOZ_INGEST_TOKEN || token !== env.BEPOZ_INGEST_TOKEN) return json({ error: 'unauthorized' }, 401);
+      const body = await request.text();
+      const key = 'bepozraw:' + new Date().toISOString();
+      await env.TOKENS.put(key, body.slice(0, 500000));
+      return json({ ok: true });
+    }
+    if (path === '/api/bepoz-inbox') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const list = await env.TOKENS.list({ prefix: 'bepozraw:' });
+      const keys = list.keys.map(k => k.name).sort().reverse().slice(0, 5);
+      const items = [];
+      for (const k of keys) { items.push({ key: k, value: (await env.TOKENS.get(k) || '').slice(0, 3000) }); }
+      return json({ count: list.keys.length, items });
+    }
+
     if (path === '/' || path === '/index.html') {
       if (loggedIn) return htmlResponse(dashboardHtml);
       return htmlResponse((await passcodeSet(env)) ? loginPage() : setupPage());
