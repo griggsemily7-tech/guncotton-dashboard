@@ -158,9 +158,9 @@ function renderCards(data){
     overheads: overheads==null?null:fmtMoney(overheads),
     profit: profit==null?null:fmtMoney(profit)
   };
-  const wageTarget = parseFloat(localStorage.getItem('vd_wagetarget'));
-  const cogsTarget = parseFloat(localStorage.getItem('vd_cogstarget'));
-  const profitTarget = parseFloat(localStorage.getItem('vd_profittarget'));
+  const wageTarget = parseFloat((localStorage.getItem('vd_wagetarget')||'').replace(/[^0-9.]/g,''));
+  const cogsTarget = parseFloat((localStorage.getItem('vd_cogstarget')||'').replace(/[^0-9.]/g,''));
+  const profitTarget = parseFloat((localStorage.getItem('vd_profittarget')||'').replace(/[^0-9.]/g,''));
   const cogsPct = (cogs!=null && revenue) ? (cogs/revenue*100) : null;
   const profitPct = (profit!=null && revenue) ? (profit/revenue*100) : null;
   const cls = {};
