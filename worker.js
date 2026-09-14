@@ -332,6 +332,8 @@ export default {
     if (path === '/api/login' && request.method === 'POST') return apiLogin(env, request);
     if (path === '/api/logout' && request.method === 'POST') return apiLogout();
 
+    const loggedIn = await isLoggedIn(request, env);
+
     if (path === '/api/debug-pl2') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       const from = url.searchParams.get('from') || '2026-09-07';
