@@ -334,6 +334,22 @@ export default {
 
     const loggedIn = await isLoggedIn(request, env);
 
+    if (path === '/api/debug-pl3') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const from = url.searchParams.get('from') || '2026-09-07';
+      const to = url.searchParams.get('to') || '2026-09-13';
+      try {
+        const token = await xeroRefresh(env);
+        const tenantId = await xeroTenantId(env);
+        const r = await fetch('https://api.xero.com/api.xro/2.0/Reports/ProfitAndLoss?fromDate=' + from + '&toDate=' + to,
+          { headers: { Authorization: 'Bearer ' + token, 'Xero-Tenant-Id': tenantId, Accept: 'application/json' } });
+        const data = await r.json();
+        const rows = (data.Reports && data.Reports[0] && data.Reports[0].Rows) || [];
+        const topLevel = rows.map(r => ({ RowType: r.RowType, Title: r.Title, cellCount: r.Cells ? r.Cells.length : null, childCount: r.Rows ? r.Rows.length : null, childTitles: (r.Rows||[]).map(c=>({RowType:c.RowType, Title:c.Title})) }));
+        return json({ topLevel });
+      } catch (e) { return json({ error: String(e), status: e.status }, 500); }
+    }
+
     if (path === '/api/debug-pl2') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       const from = url.searchParams.get('from') || '2026-09-07';
