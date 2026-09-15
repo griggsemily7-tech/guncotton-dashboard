@@ -334,6 +334,26 @@ export default {
 
     const loggedIn = await isLoggedIn(request, env);
 
+    if (path === '/api/debug-daily') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      try {
+        const token = await xeroRefresh(env);
+        const tenantId = await xeroTenantId(env);
+        const days = ['2026-09-08','2026-09-09','2026-09-10','2026-09-11','2026-09-12','2026-09-13','2026-09-14'];
+        const out = [];
+        for (const d of days) {
+          const r = await fetch('https://api.xero.com/api.xro/2.0/Reports/ProfitAndLoss?fromDate=' + d + '&toDate=' + d,
+            { headers: { Authorization: 'Bearer ' + token, 'Xero-Tenant-Id': tenantId, Accept: 'application/json' } });
+          const data = await r.json();
+          const rows = (data.Reports && data.Reports[0] && data.Reports[0].Rows) || [];
+          const acc = { income: [], cogs: [], opex: [] };
+          walkPL(rows, acc);
+          out.push({ date: d, revenue: acc.income.reduce((a,r)=>a+r.amount,0) });
+        }
+        return json({ out });
+      } catch (e) { return json({ error: String(e), status: e.status }, 500); }
+    }
+
     if (path === '/api/debug-pl3') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       const from = url.searchParams.get('from') || '2026-09-07';
@@ -380,9 +400,9 @@ export default {
     if (path === '/api/bepoz-inbox') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       const list = await env.TOKENS.list({ prefix: 'bepozraw:' });
-      const keys = list.keys.map(k => k.name).sort().reverse().slice(0, 5);
+      const keys = list.keys.map(k => k.name).sort().reverse().slice(0, 2);
       const items = [];
-      for (const k of keys) { items.push({ key: k, value: (await env.TOKENS.get(k) || '').slice(0, 3000) }); }
+      for (const k of keys) { items.push({ key: k, value: (await env.TOKENS.get(k) || '') }); }
       return json({ count: list.keys.length, items });
     }
 
