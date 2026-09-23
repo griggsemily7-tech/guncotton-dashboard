@@ -57,6 +57,10 @@
     <option value="lastfy">Last financial year</option>
   </select>
   <div class="cards" id="cards"></div>
+  <div style="margin-top:20px">
+    <div style="font-size:12px;color:var(--muted);letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px">Hourly sales today · from Bepoz</div>
+    <div id="bpzHours" style="background:var(--card);border-radius:12px;padding:16px"></div>
+  </div>
 </div>
 
 <div id="view-connections" style="display:none">
@@ -129,6 +133,26 @@ async function fetchData(){
   renderBanner(data);
   renderCards(data);
   renderConnections(data);
+  fetchBpzHours();
+}
+
+async function fetchBpzHours(){
+  const el = document.getElementById('bpzHours');
+  try{
+    const today = new Date();
+    const dateStr = today.getFullYear()+'-'+String(today.getMonth()+1).padStart(2,'0')+'-'+String(today.getDate()).padStart(2,'0');
+    const res = await fetch('/api/bepoz-hours?date='+dateStr, {cache:'no-store'});
+    if(!res.ok){ el.innerHTML = '<span style="color:var(--muted)">Not available</span>'; return; }
+    const data = await res.json();
+    if(!data.hours || !data.hours.length){ el.innerHTML = '<span style="color:var(--muted)">No hourly reports received yet today</span>'; return; }
+    el.innerHTML = data.hours.map(h=>
+      '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.06)">'+
+      '<span>'+h.hourLabel+'</span>'+
+      '<span style="color:var(--muted)">'+h.count+' txns</span>'+
+      '<span style="font-weight:600">$'+h.nett.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})+'</span>'+
+      '</div>'
+    ).join('');
+  }catch(e){ el.innerHTML = '<span style="color:var(--muted)">Not available</span>'; }
 }
 
 function renderBanner(data){
