@@ -525,12 +525,40 @@ export default {
         record.sheets = sheets;
         // Keep the original file too (safe, lossless — base64 of the real bytes), so we can always re-parse later if needed.
         record.attachmentB64 = b64encode(attachment.bytes);
+
+        // Bepoz's summary sheet (sheet1) has the raw numbers on row 3: A3 = nett sales, B3 = transaction count.
+        const sheet1 = sheets['xl/worksheets/sheet1.xml'];
+        const nett = sheet1 && sheet1.A3 != null ? parseFloat(sheet1.A3) : null;
+        const count = sheet1 && sheet1.B3 != null ? parseInt(sheet1.B3, 10) : null;
+        // Filenames look like "..._24Sep2026_090032.xlsx" — pull the report's own date so hours group correctly
+        // even if this Worker processes the email a little after midnight.
+        const dateMatch = (attachment.filename || '').match(/_(\d{2})([A-Za-z]{3})(\d{4})_/);
+        const months = { Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06', Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12' };
+        const reportDate = dateMatch ? (dateMatch[3] + '-' + months[dateMatch[2]] + '-' + dateMatch[1]) : null;
+        const startHour = record.hourLabel ? record.hourLabel.split(':')[0].padStart(2, '0') : null;
+        if (reportDate && startHour && nett != null) {
+          await env.TOKENS.put('bpzhour:' + reportDate + ':' + startHour, JSON.stringify({
+            date: reportDate, hourLabel: record.hourLabel, nett, count, receivedAt: record.receivedAt
+          }));
+        }
       } catch (e) {
         record.error = String(e && e.message || e);
       }
       const key = 'bepoz:' + record.receivedAt;
       await env.TOKENS.put(key, JSON.stringify(record));
       return json({ ok: record.ok, error: record.error || null });
+    }
+    if (path === '/api/bepoz-hours') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const date = url.searchParams.get('date') || new Date().toISOString().slice(0, 10);
+      const list = await env.TOKENS.list({ prefix: 'bpzhour:' + date + ':' });
+      const hours = [];
+      for (const k of list.keys) {
+        const raw = await env.TOKENS.get(k.name);
+        if (raw) hours.push(JSON.parse(raw));
+      }
+      hours.sort((a, b) => a.hourLabel.localeCompare(b.hourLabel, undefined, { numeric: true }));
+      return json({ date, hours });
     }
     if (path === '/api/bepoz-inbox') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
