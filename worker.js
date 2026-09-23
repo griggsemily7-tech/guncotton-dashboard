@@ -303,6 +303,122 @@ async function slot(env, from, to) {
   if (env.POS_API_TOKEN) { try { out.pos = await squareCount(env, from, to); await noteSync(env, 'pos'); } catch (e) {} }
   return out;
 }
+/* ---------------- Bepoz hourly sales report parsing ---------------- */
+function ru16(b, o) { return b[o] | (b[o + 1] << 8); }
+function ru32(b, o) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; }
+
+async function inflateRaw(bytes) {
+  const ds = new DecompressionStream('deflate-raw');
+  const stream = new Blob([bytes]).stream().pipeThrough(ds);
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+// Unzips an xlsx (a standard zip) into { filename: Uint8Array }
+async function unzipXlsx(buf) {
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= 0 && i >= buf.length - 22 - 65557; i--) {
+    if (ru32(buf, i) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('not a valid xlsx (no EOCD)');
+  const entryCount = ru16(buf, eocd + 10);
+  const cdOffset = ru32(buf, eocd + 16);
+  const files = {};
+  let p = cdOffset;
+  for (let i = 0; i < entryCount; i++) {
+    if (ru32(buf, p) !== 0x02014b50) throw new Error('corrupt central directory');
+    const method = ru16(buf, p + 10);
+    const compSize = ru32(buf, p + 20);
+    const nameLen = ru16(buf, p + 28);
+    const extraLen = ru16(buf, p + 30);
+    const commentLen = ru16(buf, p + 32);
+    const localOffset = ru32(buf, p + 42);
+    const name = new TextDecoder().decode(buf.slice(p + 46, p + 46 + nameLen));
+    const lNameLen = ru16(buf, localOffset + 26);
+    const lExtraLen = ru16(buf, localOffset + 28);
+    const dataStart = localOffset + 30 + lNameLen + lExtraLen;
+    const compData = buf.slice(dataStart, dataStart + compSize);
+    files[name] = method === 8 ? await inflateRaw(compData) : compData;
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return files;
+}
+function parseSharedStrings(xml) {
+  if (!xml) return [];
+  const out = [];
+  const siRe = /<si>([\s\S]*?)<\/si>/g;
+  let m;
+  while ((m = siRe.exec(xml))) {
+    const texts = [...m[1].matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map((x) => x[1]);
+    out.push(texts.join('').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>'));
+  }
+  return out;
+}
+function parseSheetCells(xml, sharedStrings) {
+  const cells = {};
+  const cellRe = /<c r="([A-Z]+\d+)"(?:[^>]*t="([a-zA-Z]+)")?[^>]*>([\s\S]*?)<\/c>/g;
+  let m;
+  while ((m = cellRe.exec(xml))) {
+    const [, ref, type, inner] = m;
+    let value = null;
+    if (type === 's') { const v = inner.match(/<v>(\d+)<\/v>/); value = v ? sharedStrings[parseInt(v[1], 10)] : null; }
+    else if (type === 'inlineStr') { const t = inner.match(/<t[^>]*>([\s\S]*?)<\/t>/); value = t ? t[1] : null; }
+    else { const v = inner.match(/<v>([^<]*)<\/v>/); value = v ? v[1] : null; }
+    cells[ref] = value;
+  }
+  return cells;
+}
+// Parses a decoded xlsx into { sheetName: { cellRef: value } }
+async function parseXlsxSheets(bytes) {
+  const files = await unzipXlsx(bytes);
+  const dec = new TextDecoder();
+  const shared = parseSharedStrings(files['xl/sharedStrings.xml'] ? dec.decode(files['xl/sharedStrings.xml']) : null);
+  const sheets = {};
+  for (const name of Object.keys(files)) {
+    if (/^xl\/worksheets\/sheet\d+\.xml$/.test(name)) {
+      sheets[name] = parseSheetCells(dec.decode(files[name]), shared);
+    }
+  }
+  return sheets;
+}
+
+// Extracts the first file attachment's raw bytes from a multipart/form-data body.
+// Operates on raw bytes throughout (never decodes to text) so binary attachments survive intact.
+function extractAttachment(bodyBytes, boundary) {
+  const boundaryBytes = new TextEncoder().encode('--' + boundary);
+  const dec = new TextDecoder('utf-8', { fatal: false });
+  const indices = [];
+  for (let i = 0; i <= bodyBytes.length - boundaryBytes.length; i++) {
+    let match = true;
+    for (let j = 0; j < boundaryBytes.length; j++) { if (bodyBytes[i + j] !== boundaryBytes[j]) { match = false; break; } }
+    if (match) indices.push(i);
+  }
+  for (let k = 0; k < indices.length - 1; k++) {
+    const partStart = indices[k] + boundaryBytes.length;
+    const partEnd = indices[k + 1];
+    const part = bodyBytes.slice(partStart, partEnd);
+    // headers end at the first CRLFCRLF
+    let headerEnd = -1;
+    for (let i = 0; i < part.length - 3; i++) {
+      if (part[i] === 13 && part[i + 1] === 10 && part[i + 2] === 13 && part[i + 3] === 10) { headerEnd = i; break; }
+    }
+    if (headerEnd < 0) continue;
+    const headerText = dec.decode(part.slice(0, headerEnd));
+    if (!/name="attachments\[\]"/.test(headerText)) continue;
+    const filenameMatch = headerText.match(/filename="([^"]*)"/);
+    let dataStart = headerEnd + 4;
+    let dataEnd = part.length;
+    // trim trailing CRLF before the next boundary marker
+    if (part[dataEnd - 2] === 13 && part[dataEnd - 1] === 10) dataEnd -= 2;
+    return { filename: filenameMatch ? filenameMatch[1] : null, bytes: part.slice(dataStart, dataEnd) };
+  }
+  return null;
+}
+function b64encode(bytes) {
+  let s = ''; const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) s += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  return btoa(s);
+}
+
 async function apiMetrics(env, url) {
   const cur = url.searchParams.get('cur'); const prev = url.searchParams.get('prev'); const yoy = url.searchParams.get('yoy');
   const parseR = (s) => { const m = /^(\d{4}-\d{2}-\d{2}):(\d{4}-\d{2}-\d{2})$/.exec(s || ''); return m ? { from: m[1], to: m[2] } : null; };
@@ -392,17 +508,41 @@ export default {
     if (path === '/api/bepoz-raw' && request.method === 'POST') {
       const token = url.searchParams.get('token');
       if (!env.BEPOZ_INGEST_TOKEN || token !== env.BEPOZ_INGEST_TOKEN) return json({ error: 'unauthorized' }, 401);
-      const body = await request.text();
-      const key = 'bepozraw:' + new Date().toISOString();
-      await env.TOKENS.put(key, body.slice(0, 500000));
-      return json({ ok: true });
+      const contentType = request.headers.get('content-type') || '';
+      const boundaryMatch = contentType.match(/boundary="?([^";]+)"?/);
+      const bodyBytes = new Uint8Array(await request.arrayBuffer());
+      const record = { receivedAt: new Date().toISOString(), ok: false };
+      try {
+        if (!boundaryMatch) throw new Error('no multipart boundary in content-type');
+        const attachment = extractAttachment(bodyBytes, boundaryMatch[1]);
+        if (!attachment || !attachment.bytes || !attachment.bytes.length) throw new Error('no attachment found in email');
+        record.filename = attachment.filename;
+        // Bepoz names attachments like "7_00-8_00 Sales by Hour_24Sep2026_080032.xlsx" — pull the hour label straight from the filename.
+        const hourMatch = (attachment.filename || '').match(/^(\d{1,2}_\d{2}-\d{1,2}_\d{2})/);
+        record.hourLabel = hourMatch ? hourMatch[1].replace(/_/g, ':') : null;
+        const sheets = await parseXlsxSheets(attachment.bytes);
+        record.ok = true;
+        record.sheets = sheets;
+        // Keep the original file too (safe, lossless — base64 of the real bytes), so we can always re-parse later if needed.
+        record.attachmentB64 = b64encode(attachment.bytes);
+      } catch (e) {
+        record.error = String(e && e.message || e);
+      }
+      const key = 'bepoz:' + record.receivedAt;
+      await env.TOKENS.put(key, JSON.stringify(record));
+      return json({ ok: record.ok, error: record.error || null });
     }
     if (path === '/api/bepoz-inbox') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
-      const list = await env.TOKENS.list({ prefix: 'bepozraw:' });
-      const keys = list.keys.map(k => k.name).sort().reverse().slice(0, 2);
+      const list = await env.TOKENS.list({ prefix: 'bepoz:' });
+      const keys = list.keys.map(k => k.name).sort().reverse().slice(0, 5);
       const items = [];
-      for (const k of keys) { items.push({ key: k, value: (await env.TOKENS.get(k) || '') }); }
+      for (const k of keys) {
+        const raw = await env.TOKENS.get(k);
+        const rec = raw ? JSON.parse(raw) : null;
+        // omit the base64 blob from this listing view — it's only needed for re-parsing, not for eyeballing the numbers
+        if (rec) { const { attachmentB64, ...rest } = rec; items.push({ key: k, ...rest }); }
+      }
       return json({ count: list.keys.length, items });
     }
 
