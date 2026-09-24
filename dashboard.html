@@ -15,6 +15,8 @@
   .sub{color:var(--muted);font-size:13px;margin-bottom:16px}
   .tabs{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
   .tab{padding:8px 14px;border-radius:8px;background:var(--card);cursor:pointer;font-size:14px}
+  .venue-btn{padding:8px 14px;border-radius:8px;background:var(--card);cursor:pointer;font-size:14px;display:inline-block;margin-right:8px}
+  .venue-btn.active{background:var(--accent)}
   .tab.active{background:var(--accent)}
   select,button,input{font-family:inherit}
   .banner{background:#7c2d12;padding:10px 14px;border-radius:8px;margin-bottom:14px;font-size:13px}
@@ -39,6 +41,10 @@
 <body>
 <h1 id="venueName">Your venue</h1>
 <div class="sub">Your numbers · ex-GST</div>
+<div class="tabs" style="margin-bottom:6px">
+  <div class="venue-btn active" data-venue="guncotton">Gun Cotton (Cafe)</div>
+  <div class="venue-btn" data-venue="doughgirlz">Doughgirlz Bakehouse</div>
+</div>
 <div class="tabs">
   <div class="tab active" data-tab="dashboard">Dashboard</div>
   <div class="tab" data-tab="connections">Connections</div>
@@ -57,7 +63,7 @@
     <option value="lastfy">Last financial year</option>
   </select>
   <div class="cards" id="cards"></div>
-  <div style="margin-top:20px">
+  <div id="bpzHoursSection" style="margin-top:20px">
     <div style="font-size:12px;color:var(--muted);letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px">Hourly sales today · from Bepoz</div>
     <div id="bpzHours" style="background:var(--card);border-radius:12px;padding:16px"></div>
   </div>
@@ -97,15 +103,28 @@
 </div>
 
 <script>
-const METRICS = [
-  {key:'revenue', label:'Revenue', desc:'All trading income, ex-GST · from Xero'},
-  {key:'count', label:'Number of transactions', desc:'Completed transactions · from Square'},
-  {key:'acs', label:'Average customer spend', desc:'Revenue ÷ transactions'},
-  {key:'cogs', label:'Cost of goods', desc:'Cost of Sales accounts, ex-GST · from Xero'},
-  {key:'wagepct', label:'Wage %', desc:'(Wages + super) ÷ revenue · from Xero'},
-  {key:'overheads', label:'Overheads', desc:'Operating expenses excl. wages/super/COGS · from Xero'},
-  {key:'profit', label:'Profit', desc:'Revenue less COGS, wages+super, overheads'}
-];
+const METRICS_BY_VENUE = {
+  guncotton: [
+    {key:'revenue', label:'Revenue', desc:'Cafe trading income, ex-GST · from Xero (Location: Cafe)'},
+    {key:'count', label:'Number of transactions', desc:'Completed transactions · from Bepoz'},
+    {key:'acs', label:'Average customer spend', desc:'Revenue ÷ transactions'},
+    {key:'cogs', label:'Cost of goods', desc:'Cost of Sales accounts, ex-GST · from Xero'},
+    {key:'wagepct', label:'Wage %', desc:'(Wages + super) ÷ revenue · from Xero'},
+    {key:'overheads', label:'Overheads', desc:'Operating expenses excl. wages/super/COGS · from Xero'},
+    {key:'profit', label:'Profit', desc:'Revenue less COGS, wages+super, overheads'}
+  ],
+  doughgirlz: [
+    {key:'revenue', label:'Revenue', desc:'Doughgirlz trading income, ex-GST · from Xero (Location: Dough Girlz)'},
+    {key:'count', label:'Number of transactions', desc:'Completed transactions · from Square'},
+    {key:'acs', label:'Average customer spend', desc:'Revenue ÷ transactions'},
+    {key:'cogs', label:'Cost of goods', desc:'Cost of Sales accounts, ex-GST · from Xero'},
+    {key:'wagepct', label:'Wage %', desc:'(Wages + super) ÷ revenue · from Xero'},
+    {key:'overheads', label:'Overheads', desc:'Operating expenses excl. wages/super/COGS · from Xero'},
+    {key:'profit', label:'Profit', desc:'Revenue less COGS, wages+super, overheads'}
+  ]
+};
+let currentVenue = localStorage.getItem('vd_venue') || 'guncotton';
+let METRICS = METRICS_BY_VENUE[currentVenue];
 
 function fmtMoney(n){ return n==null ? null : '$'+n.toLocaleString(undefined,{maximumFractionDigits:0}); }
 function fmtPct(n){ return n==null ? null : (n*100).toFixed(1)+'%'; }
@@ -126,14 +145,15 @@ function rangeFor(period){
 async function fetchData(){
   const period = document.getElementById('period').value;
   const r = rangeFor(period);
-  const url = '/api/metrics?cur='+r.from+':'+r.to+'&_='+Date.now();
+  const url = '/api/metrics?cur='+r.from+':'+r.to+'&venue='+currentVenue+'&_='+Date.now();
   const res = await fetch(url, {cache:'no-store'});
   if(res.status===401){ location.reload(); return; }
   const data = await res.json();
   renderBanner(data);
   renderCards(data);
   renderConnections(data);
-  fetchBpzHours();
+  document.getElementById('bpzHoursSection').style.display = (currentVenue==='guncotton') ? 'block' : 'none';
+  if(currentVenue==='guncotton') fetchBpzHours();
 }
 
 async function fetchBpzHours(){
@@ -211,6 +231,18 @@ function renderConnections(data){
   document.getElementById('pos-pill').textContent = pos.connected ? 'Connected' : 'Not connected';
   document.getElementById('pos-pill').className = 'pill ' + (pos.connected?'on':'off');
 }
+
+document.querySelectorAll('.venue-btn').forEach(b=>{
+  b.onclick = ()=>{
+    document.querySelectorAll('.venue-btn').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active');
+    currentVenue = b.dataset.venue;
+    localStorage.setItem('vd_venue', currentVenue);
+    METRICS = METRICS_BY_VENUE[currentVenue];
+    fetchData();
+  };
+  if(b.dataset.venue===currentVenue) b.classList.add('active'); else b.classList.remove('active');
+});
 
 document.querySelectorAll('.tab').forEach(t=>{
   t.onclick = ()=>{
