@@ -206,10 +206,11 @@ function walkPL(rows, sectionAcc) {
 }
 const WAGE_RE = /wages|salaries|superannuation|\bsuper\b|payroll|annual leave|long service|workcover/i;
 
-async function xeroPL(env, from, to) {
+async function xeroPL(env, from, to, trackingOptionId) {
   const token = await xeroRefresh(env);
   const tenantId = await xeroTenantId(env);
-  const url = 'https://api.xero.com/api.xro/2.0/Reports/ProfitAndLoss?fromDate=' + from + '&toDate=' + to;
+  let url = 'https://api.xero.com/api.xro/2.0/Reports/ProfitAndLoss?fromDate=' + from + '&toDate=' + to;
+  if (trackingOptionId) url += '&trackingOptionID=' + encodeURIComponent(trackingOptionId);
   const res = await fetch(url, { headers: { Authorization: 'Bearer ' + token, 'Xero-Tenant-Id': tenantId, Accept: 'application/json' } });
   if (!res.ok) { const e = new Error('xero pl failed'); e.status = res.status; throw e; }
   const data = await res.json();
@@ -224,6 +225,46 @@ async function xeroPL(env, from, to) {
   const opexTotal = sum(acc.opex);
   const overheads = opexTotal - wagesSuper;
   return { revenue, cogs, wagesSuper, overheads, wageLabels: wageRows.map((r) => r.label) };
+}
+
+// Venues map to options on Xero's existing "Location" tracking category.
+const VENUE_TRACKING_OPTION = { guncotton: 'Cafe', doughgirlz: 'Dough Girlz' };
+
+// Looks up the GUID Xero needs for a tracking option, caching it in KV since it never changes.
+async function getTrackingOptionId(env, categoryName, optionName) {
+  const cacheKey = 'trackingopt:' + categoryName + ':' + optionName;
+  const cached = await env.TOKENS.get(cacheKey);
+  if (cached) return cached;
+  const token = await xeroRefresh(env);
+  const tenantId = await xeroTenantId(env);
+  const res = await fetch('https://api.xero.com/api.xro/2.0/TrackingCategories', {
+    headers: { Authorization: 'Bearer ' + token, 'Xero-Tenant-Id': tenantId, Accept: 'application/json' }
+  });
+  if (!res.ok) { const e = new Error('xero tracking categories failed'); e.status = res.status; throw e; }
+  const data = await res.json();
+  const cat = (data.TrackingCategories || []).find((c) => c.Name === categoryName);
+  const opt = cat && (cat.Options || []).find((o) => o.Name === optionName);
+  if (!opt) throw new Error('tracking option not found: ' + categoryName + ' / ' + optionName);
+  await env.TOKENS.put(cacheKey, opt.TrackingOptionID, { expirationTtl: 86400 });
+  return opt.TrackingOptionID;
+}
+
+// Sums Bepoz's per-hour records (already parsed and stored by /api/bepoz-raw) across a date range.
+async function bepozRangeStats(env, from, to) {
+  let count = 0, sales = 0;
+  const start = new Date(from + 'T00:00:00'), end = new Date(to + 'T00:00:00');
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    const dateStr = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    const list = await env.TOKENS.list({ prefix: 'bpzhour:' + dateStr + ':' });
+    for (const k of list.keys) {
+      const raw = await env.TOKENS.get(k.name);
+      if (!raw) continue;
+      const rec = JSON.parse(raw);
+      if (typeof rec.count === 'number') count += rec.count;
+      if (typeof rec.nett === 'number') sales += rec.nett;
+    }
+  }
+  return { count, sales };
 }
 
 /* ---------------- Square (POS) ---------------- */
@@ -297,10 +338,14 @@ async function accountingStatus(env) {
     return { configured: true, connected: false, error: { code: err.status || 0 } };
   }
 }
-async function slot(env, from, to) {
+async function slot(env, from, to, trackingOptionId, venue) {
   const out = { accounting: null, pos: null };
-  try { out.accounting = await xeroPL(env, from, to); await noteSync(env, 'accounting'); } catch (e) {}
-  if (env.POS_API_TOKEN) { try { out.pos = await squareCount(env, from, to); await noteSync(env, 'pos'); } catch (e) {} }
+  try { out.accounting = await xeroPL(env, from, to, trackingOptionId); await noteSync(env, 'accounting'); } catch (e) {}
+  if (venue === 'guncotton') {
+    try { const b = await bepozRangeStats(env, from, to); out.pos = { count: b.count, sales: b.sales }; } catch (e) {}
+  } else if (env.POS_API_TOKEN) {
+    try { out.pos = await squareCount(env, from, to); await noteSync(env, 'pos'); } catch (e) {}
+  }
   return out;
 }
 /* ---------------- Bepoz hourly sales report parsing ---------------- */
@@ -421,19 +466,30 @@ function b64encode(bytes) {
 
 async function apiMetrics(env, url) {
   const cur = url.searchParams.get('cur'); const prev = url.searchParams.get('prev'); const yoy = url.searchParams.get('yoy');
+  const venue = url.searchParams.get('venue'); // 'guncotton' | 'doughgirlz' | null (combined, whole business)
   const parseR = (s) => { const m = /^(\d{4}-\d{2}-\d{2}):(\d{4}-\d{2}-\d{2})$/.exec(s || ''); return m ? { from: m[1], to: m[2] } : null; };
   const c = parseR(cur); if (!c) return json({ error: 'bad range' }, 400);
   const p = parseR(prev), y = parseR(yoy);
+
+  let trackingOptionId = null, trackingError = null;
+  const optionName = venue && VENUE_TRACKING_OPTION[venue];
+  if (optionName) {
+    try { trackingOptionId = await getTrackingOptionId(env, 'Location', optionName); }
+    catch (e) { trackingError = String(e && e.message || e); }
+  }
+
   const [accStatus, posStatus] = await Promise.all([accountingStatus(env), squareStatus(env)]);
   const periods = {};
-  periods.cur = await slot(env, c.from, c.to);
-  periods.prev = p ? await slot(env, p.from, p.to) : null;
-  periods.yoy = y ? await slot(env, y.from, y.to) : null;
+  periods.cur = await slot(env, c.from, c.to, trackingOptionId, venue);
+  periods.prev = p ? await slot(env, p.from, p.to, trackingOptionId, venue) : null;
+  periods.yoy = y ? await slot(env, y.from, y.to, trackingOptionId, venue) : null;
   return json({
     generatedAt: new Date().toISOString(),
+    venue: venue || 'combined',
+    trackingError,
     sources: {
       accounting: accStatus,
-      pos: { configured: true, connected: !!posStatus.connected, org: posStatus.org || null, sandbox: false, lastSync: await lastSync(env, 'pos') },
+      pos: { configured: true, connected: venue === 'guncotton' ? true : !!posStatus.connected, org: venue === 'guncotton' ? 'Bepoz' : (posStatus.org || null), sandbox: false, lastSync: await lastSync(env, 'pos') },
       rostering: { configured: false }
     },
     periods
