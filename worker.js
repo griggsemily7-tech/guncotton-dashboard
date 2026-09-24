@@ -210,7 +210,7 @@ async function xeroPL(env, from, to, trackingOptionId) {
   const token = await xeroRefresh(env);
   const tenantId = await xeroTenantId(env);
   let url = 'https://api.xero.com/api.xro/2.0/Reports/ProfitAndLoss?fromDate=' + from + '&toDate=' + to;
-  if (trackingOptionId) url += '&trackingOptionID=' + encodeURIComponent(trackingOptionId);
+  if (trackingOptionId) url += '&trackingOptionID1=' + encodeURIComponent(trackingOptionId);
   const res = await fetch(url, { headers: { Authorization: 'Bearer ' + token, 'Xero-Tenant-Id': tenantId, Accept: 'application/json' } });
   if (!res.ok) { const e = new Error('xero pl failed'); e.status = res.status; throw e; }
   const data = await res.json();
