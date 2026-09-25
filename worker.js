@@ -1,6 +1,7 @@
 /* Venue dashboard Worker.
-   Money figures always come from Xero, ex-GST. Square supplies only the
-   count of completed transactions. Read-only everywhere. */
+   Money figures come from Xero, ex-GST, except Doughgirlz's Revenue, which comes
+   from Square's own totals (ex-GST) since Square is Doughgirlz-only and its Xero
+   tagging isn't reliably split yet. Read-only everywhere. */
 
 import dashboardHtml from './dashboard.html';
 
@@ -272,7 +273,7 @@ async function bepozRangeStats(env, from, to) {
 async function squareCount(env, from, to) {
   if (!env.POS_API_TOKEN) { const e = new Error('no token'); e.status = 401; throw e; }
   const base = 'https://connect.squareup.com';
-  let cursor = null, count = 0, iterations = 0;
+  let cursor = null, count = 0, grossCents = 0, iterations = 0;
   do {
     const params = new URLSearchParams({ begin_time: from + 'T00:00:00+10:00', end_time: to + 'T23:59:59+10:00', sort_order: 'ASC' });
     if (cursor) params.set('cursor', cursor);
@@ -281,10 +282,17 @@ async function squareCount(env, from, to) {
     });
     if (!res.ok) { const e = new Error('square failed'); e.status = res.status; throw e; }
     const data = await res.json();
-    for (const p of data.payments || []) { if (p.status === 'COMPLETED') count++; }
+    for (const p of data.payments || []) {
+      if (p.status === 'COMPLETED') {
+        count++;
+        if (p.total_money && typeof p.total_money.amount === 'number') grossCents += p.total_money.amount;
+      }
+    }
     cursor = data.cursor; iterations++;
   } while (cursor && iterations < 20);
-  return { count };
+  // Square's totals are GST-inclusive; every other figure on this dashboard is ex-GST, so back out the standard 10% here too.
+  const salesExGst = (grossCents / 100) / 1.1;
+  return { count, salesExGst };
 }
 async function squareStatus(env) {
   if (!env.POS_API_TOKEN) return { connected: false };
@@ -345,7 +353,13 @@ async function slot(env, from, to, trackingIds, venue) {
   if (venue === 'guncotton') {
     try { const b = await bepozRangeStats(env, from, to); out.pos = { count: b.count, sales: b.sales }; } catch (e) {}
   } else if (env.POS_API_TOKEN) {
-    try { out.pos = await squareCount(env, from, to); await noteSync(env, 'pos'); } catch (e) {}
+    try {
+      out.pos = await squareCount(env, from, to);
+      await noteSync(env, 'pos');
+      // Doughgirlz's Xero tagging isn't reliable yet, but every one of its transactions is genuinely
+      // theirs (Square is Doughgirlz-only) — so use Square's own total as revenue here instead of Xero's.
+      if (venue === 'doughgirlz' && out.accounting) out.accounting.revenue = out.pos.salesExGst;
+    } catch (e) {}
   }
   return out;
 }
