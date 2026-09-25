@@ -210,7 +210,7 @@ async function xeroPL(env, from, to, trackingIds) {
   const token = await xeroRefresh(env);
   const tenantId = await xeroTenantId(env);
   let url = 'https://api.xero.com/api.xro/2.0/Reports/ProfitAndLoss?fromDate=' + from + '&toDate=' + to;
-  if (trackingIds) url += '&trackingCategoryID1=' + encodeURIComponent(trackingIds.categoryId) + '&trackingOptionID1=' + encodeURIComponent(trackingIds.optionId);
+  if (trackingIds) url += '&trackingCategoryID=' + encodeURIComponent(trackingIds.categoryId) + '&trackingOptionID=' + encodeURIComponent(trackingIds.optionId);
   const res = await fetch(url, { headers: { Authorization: 'Bearer ' + token, 'Xero-Tenant-Id': tenantId, Accept: 'application/json' } });
   if (!res.ok) { const e = new Error('xero pl failed'); e.status = res.status; throw e; }
   const data = await res.json();
@@ -224,7 +224,7 @@ async function xeroPL(env, from, to, trackingIds) {
   const wagesSuper = sum(wageRows);
   const opexTotal = sum(acc.opex);
   const overheads = opexTotal - wagesSuper;
-  return { revenue, cogs, wagesSuper, overheads, wageLabels: wageRows.map((r) => r.label), _debugUrl: url };
+  return { revenue, cogs, wagesSuper, overheads, wageLabels: wageRows.map((r) => r.label) };
 }
 
 // Venues map to options on Xero's existing "Location" tracking category.
@@ -488,8 +488,6 @@ async function apiMetrics(env, url) {
     generatedAt: new Date().toISOString(),
     venue: venue || 'combined',
     trackingError,
-    debugOptionName: optionName || null,
-    debugTrackingIds: trackingIds,
     sources: {
       accounting: accStatus,
       pos: { configured: true, connected: venue === 'guncotton' ? true : !!posStatus.connected, org: venue === 'guncotton' ? 'Bepoz' : (posStatus.org || null), sandbox: false, lastSync: await lastSync(env, 'pos') },
