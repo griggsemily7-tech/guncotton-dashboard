@@ -351,7 +351,13 @@ async function slot(env, from, to, trackingIds, venue) {
   const out = { accounting: null, pos: null };
   try { out.accounting = await xeroPL(env, from, to, trackingIds); await noteSync(env, 'accounting'); } catch (e) { out.accountingError = String(e && e.message || e); }
   if (venue === 'guncotton') {
-    try { const b = await bepozRangeStats(env, from, to); out.pos = { count: b.count, sales: b.sales }; } catch (e) {}
+    try {
+      const b = await bepozRangeStats(env, from, to);
+      out.pos = { count: b.count, sales: b.sales };
+      // Same situation as Doughgirlz below: Cafe's till sales aren't tagged with a Location in Xero
+      // (only its bills/expenses are), so use Bepoz's own nett-sales total as Revenue instead.
+      if (out.accounting) out.accounting.revenue = b.sales;
+    } catch (e) {}
   } else if (env.POS_API_TOKEN) {
     try {
       out.pos = await squareCount(env, from, to);
