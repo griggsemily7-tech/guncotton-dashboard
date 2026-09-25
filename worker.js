@@ -224,7 +224,7 @@ async function xeroPL(env, from, to, trackingIds) {
   const wagesSuper = sum(wageRows);
   const opexTotal = sum(acc.opex);
   const overheads = opexTotal - wagesSuper;
-  return { revenue, cogs, wagesSuper, overheads, wageLabels: wageRows.map((r) => r.label) };
+  return { revenue, cogs, wagesSuper, overheads, wageLabels: wageRows.map((r) => r.label), _debugUrl: url };
 }
 
 // Venues map to options on Xero's existing "Location" tracking category.
@@ -232,7 +232,7 @@ const VENUE_TRACKING_OPTION = { guncotton: 'Cafe', doughgirlz: 'Dough Girlz' };
 
 // Looks up both GUIDs Xero needs (category + option) for a tracking option, caching in KV since they never change.
 async function getTrackingIds(env, categoryName, optionName) {
-  const cacheKey = 'trackingids2:' + categoryName + ':' + optionName;
+  const cacheKey = 'trackingids3:' + categoryName + ':' + optionName;
   const cached = await env.TOKENS.get(cacheKey);
   if (cached) return JSON.parse(cached);
   const token = await xeroRefresh(env);
@@ -488,6 +488,8 @@ async function apiMetrics(env, url) {
     generatedAt: new Date().toISOString(),
     venue: venue || 'combined',
     trackingError,
+    debugOptionName: optionName || null,
+    debugTrackingIds: trackingIds,
     sources: {
       accounting: accStatus,
       pos: { configured: true, connected: venue === 'guncotton' ? true : !!posStatus.connected, org: venue === 'guncotton' ? 'Bepoz' : (posStatus.org || null), sandbox: false, lastSync: await lastSync(env, 'pos') },
