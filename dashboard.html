@@ -142,13 +142,18 @@ function rangeFor(period){
   return {from:fmt(now),to:fmt(now)};
 }
 
+let fetchGen = 0;
 async function fetchData(){
+  const myGen = ++fetchGen;
+  document.getElementById('cards').innerHTML = '<div style="color:var(--muted);padding:20px 0">Loading…</div>';
   const period = document.getElementById('period').value;
   const r = rangeFor(period);
   const url = '/api/metrics?cur='+r.from+':'+r.to+'&venue='+currentVenue+'&_='+Date.now();
   const res = await fetch(url, {cache:'no-store'});
+  if(myGen !== fetchGen) return; // a newer tab switch/period change has already started a fresher fetch — drop this stale one
   if(res.status===401){ location.reload(); return; }
   const data = await res.json();
+  if(myGen !== fetchGen) return;
   renderBanner(data);
   renderCards(data);
   renderConnections(data);
