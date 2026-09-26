@@ -253,11 +253,17 @@ async function getTrackingIds(env, categoryName, optionName) {
 
 // Sums Bepoz's per-hour records (already parsed and stored by /api/bepoz-raw) across a date range.
 async function bepozRangeStats(env, from, to) {
-  let count = 0, sales = 0;
+  const days = await bepozDailyBreakdown(env, from, to);
+  return days.reduce((a, d) => ({ count: a.count + d.count, sales: a.sales + d.sales }), { count: 0, sales: 0 });
+}
+// Same data, broken out per day instead of summed — powers the "Daily sales" panel.
+async function bepozDailyBreakdown(env, from, to) {
+  const out = [];
   const start = new Date(from + 'T00:00:00'), end = new Date(to + 'T00:00:00');
   for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
     const dateStr = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
     const list = await env.TOKENS.list({ prefix: 'bpzhour:' + dateStr + ':' });
+    let count = 0, sales = 0;
     for (const k of list.keys) {
       const raw = await env.TOKENS.get(k.name);
       if (!raw) continue;
@@ -265,15 +271,23 @@ async function bepozRangeStats(env, from, to) {
       if (typeof rec.count === 'number') count += rec.count;
       if (typeof rec.nett === 'number') sales += rec.nett;
     }
+    out.push({ date: dateStr, count, sales });
   }
-  return { count, sales };
+  return out;
 }
 
 /* ---------------- Square (POS) ---------------- */
-async function squareCount(env, from, to) {
+// Queensland is fixed UTC+10 year-round (no daylight saving), so this conversion never needs DST handling.
+function toBrisbane(dateObj) {
+  const d = new Date(dateObj.getTime() + 10 * 3600 * 1000);
+  const dateStr = d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0') + '-' + String(d.getUTCDate()).padStart(2, '0');
+  return { dateStr, hour: d.getUTCHours() };
+}
+async function squareFetchPayments(env, from, to) {
   if (!env.POS_API_TOKEN) { const e = new Error('no token'); e.status = 401; throw e; }
   const base = 'https://connect.squareup.com';
-  let cursor = null, count = 0, grossCents = 0, iterations = 0;
+  let cursor = null, iterations = 0;
+  const out = [];
   do {
     const params = new URLSearchParams({ begin_time: from + 'T00:00:00+10:00', end_time: to + 'T23:59:59+10:00', sort_order: 'ASC' });
     if (cursor) params.set('cursor', cursor);
@@ -283,16 +297,40 @@ async function squareCount(env, from, to) {
     if (!res.ok) { const e = new Error('square failed'); e.status = res.status; throw e; }
     const data = await res.json();
     for (const p of data.payments || []) {
-      if (p.status === 'COMPLETED') {
-        count++;
-        if (p.total_money && typeof p.total_money.amount === 'number') grossCents += p.total_money.amount;
-      }
+      if (p.status === 'COMPLETED') out.push({ createdAt: new Date(p.created_at), amountCents: (p.total_money && p.total_money.amount) || 0 });
     }
     cursor = data.cursor; iterations++;
   } while (cursor && iterations < 20);
+  return out;
+}
+async function squareCount(env, from, to) {
+  const payments = await squareFetchPayments(env, from, to);
+  const grossCents = payments.reduce((a, p) => a + p.amountCents, 0);
   // Square's totals are GST-inclusive; every other figure on this dashboard is ex-GST, so back out the standard 10% here too.
-  const salesExGst = (grossCents / 100) / 1.1;
-  return { count, salesExGst };
+  return { count: payments.length, salesExGst: (grossCents / 100) / 1.1 };
+}
+function bucketPaymentsHourly(payments, targetDateStr) {
+  const buckets = {};
+  for (const p of payments) {
+    const { dateStr, hour } = toBrisbane(p.createdAt);
+    if (dateStr !== targetDateStr) continue;
+    if (!buckets[hour]) buckets[hour] = { count: 0, cents: 0 };
+    buckets[hour].count++; buckets[hour].cents += p.amountCents;
+  }
+  const hours = [];
+  for (let h = 0; h < 24; h++) {
+    if (buckets[h]) hours.push({ hourLabel: h + ':00-' + (h + 1) + ':00', count: buckets[h].count, nett: (buckets[h].cents / 100) / 1.1 });
+  }
+  return hours;
+}
+function bucketPaymentsDaily(payments) {
+  const buckets = {};
+  for (const p of payments) {
+    const { dateStr } = toBrisbane(p.createdAt);
+    if (!buckets[dateStr]) buckets[dateStr] = { count: 0, cents: 0 };
+    buckets[dateStr].count++; buckets[dateStr].cents += p.amountCents;
+  }
+  return Object.keys(buckets).sort().map((d) => ({ date: d, count: buckets[d].count, sales: (buckets[d].cents / 100) / 1.1 }));
 }
 async function squareStatus(env) {
   if (!env.POS_API_TOKEN) return { connected: false };
@@ -636,6 +674,43 @@ export default {
       }
       hours.sort((a, b) => a.hourLabel.localeCompare(b.hourLabel, undefined, { numeric: true }));
       return json({ date, hours });
+    }
+    // Unified hourly panel for either venue: Gun Cotton reads its already-parsed Bepoz records,
+    // Doughgirlz buckets Square's payments for that one day by the hour.
+    if (path === '/api/pos-hours') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const venue = url.searchParams.get('venue');
+      const date = url.searchParams.get('date') || new Date().toISOString().slice(0, 10);
+      if (venue === 'guncotton') {
+        const list = await env.TOKENS.list({ prefix: 'bpzhour:' + date + ':' });
+        const hours = [];
+        for (const k of list.keys) { const raw = await env.TOKENS.get(k.name); if (raw) hours.push(JSON.parse(raw)); }
+        hours.sort((a, b) => a.hourLabel.localeCompare(b.hourLabel, undefined, { numeric: true }));
+        return json({ date, hours });
+      } else {
+        try {
+          const payments = await squareFetchPayments(env, date, date);
+          const hours = bucketPaymentsHourly(payments, date);
+          return json({ date, hours });
+        } catch (e) { return json({ date, hours: [], error: String(e && e.message || e) }); }
+      }
+    }
+    // Day-by-day breakdown for the currently selected period, either venue.
+    if (path === '/api/pos-daily') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const venue = url.searchParams.get('venue');
+      const from = url.searchParams.get('from'), to = url.searchParams.get('to');
+      if (!from || !to) return json({ error: 'bad range' }, 400);
+      if (venue === 'guncotton') {
+        const days = await bepozDailyBreakdown(env, from, to);
+        return json({ from, to, days });
+      } else {
+        try {
+          const payments = await squareFetchPayments(env, from, to);
+          const days = bucketPaymentsDaily(payments);
+          return json({ from, to, days });
+        } catch (e) { return json({ from, to, days: [], error: String(e && e.message || e) }); }
+      }
     }
     if (path === '/api/bepoz-inbox') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
