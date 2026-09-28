@@ -36,6 +36,11 @@
   .prow span:nth-child(2){text-align:right;color:var(--muted)}
   .prow span:nth-child(3){text-align:right;font-weight:600}
   @media(max-width:600px){.prow{grid-template-columns:minmax(0,1fr) 58px 84px;font-size:13px}}
+  .drow{display:grid;grid-template-columns:100px minmax(0,1fr) 90px 120px;align-items:baseline;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.06);font-variant-numeric:tabular-nums}
+  .drow span:nth-child(2){color:var(--muted)}
+  .drow span:nth-child(3){text-align:right;color:var(--muted)}
+  .drow span:nth-child(4){text-align:right;font-weight:600}
+  @media(max-width:600px){.drow{grid-template-columns:42px minmax(0,1fr) 56px 82px;font-size:13px}}
   .notconfigured{color:var(--muted);font-style:italic}
   .conn-row{display:flex;justify-content:space-between;align-items:center;background:var(--card);padding:14px;border-radius:10px;margin-bottom:10px}
   .pill{padding:4px 10px;border-radius:999px;font-size:12px}
@@ -259,13 +264,18 @@ async function fetchDailySales(r, myGen, silent){
     const data = await res.json();
     if(myGen !== fetchGen) return;
     if(!data.days || !data.days.length){ el.innerHTML = '<span style="color:var(--muted)">No sales recorded for this period</span>'; return; }
-    el.innerHTML = data.days.map(d=>
-      '<div class="prow">'+
-      '<span>'+new Date(d.date+'T00:00:00').toLocaleDateString('en-AU', window.innerWidth<600 ? {weekday:'short',day:'numeric',month:'short'} : {weekday:'long',day:'numeric',month:'short',year:'numeric'})+'</span>'+
-      '<span style="color:var(--muted)">'+d.count+' txns</span>'+
-      '<span style="font-weight:600">$'+d.sales.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})+'</span>'+
-      '</div>'
-    ).join('');
+    const narrow = window.innerWidth < 600;
+    el.innerHTML = data.days.map(d=>{
+      const dt = new Date(d.date+'T00:00:00');
+      const dayName = dt.toLocaleDateString('en-AU', {weekday: narrow ? 'short' : 'long'});
+      const dateText = dt.toLocaleDateString('en-AU', narrow ? {day:'numeric',month:'short'} : {day:'numeric',month:'short',year:'numeric'});
+      return '<div class="drow">'+
+        '<span>'+dayName+'</span>'+
+        '<span>'+dateText+'</span>'+
+        '<span>'+d.count+' txns</span>'+
+        '<span>$'+d.sales.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})+'</span>'+
+        '</div>';
+    }).join('');
   }catch(e){ if(myGen===fetchGen) el.innerHTML = '<span style="color:var(--muted)">Not available</span>'; }
 }
 
