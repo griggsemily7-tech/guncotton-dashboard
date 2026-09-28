@@ -257,7 +257,7 @@ async function fetchDailySales(r, myGen, silent){
     if(!data.days || !data.days.length){ el.innerHTML = '<span style="color:var(--muted)">No sales recorded for this period</span>'; return; }
     el.innerHTML = data.days.map(d=>
       '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.06)">'+
-      '<span>'+d.date+'</span>'+
+      '<span>'+new Date(d.date+'T00:00:00').toLocaleDateString('en-AU',{weekday:'long',day:'numeric',month:'short',year:'numeric'})+'</span>'+
       '<span style="color:var(--muted)">'+d.count+' txns</span>'+
       '<span style="font-weight:600">$'+d.sales.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})+'</span>'+
       '</div>'
