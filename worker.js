@@ -152,6 +152,48 @@ const XERO = {
   scopes: 'offline_access accounting.reports.profitandloss.read accounting.settings.read payroll.employees.read payroll.payruns.read'
 };
 
+const ROUBLER = {
+  tokenUrl: 'https://oidc.staging.roubler.net/oauth2/token',
+  graphqlUrl: 'https://graphql.au.staging.roubler.net/graphql'
+};
+// Read-only Roubler (staging) integration: rotates access/refresh tokens in KV, seeded once from a
+// Cloudflare secret (ROUBLER_INITIAL_REFRESH_TOKEN) obtained via the one-time Postman login Roubler described.
+async function roublerRefresh(env) {
+  let t = await getTokens(env, 'roubler');
+  if (!t && env.ROUBLER_INITIAL_REFRESH_TOKEN) t = { refresh_token: env.ROUBLER_INITIAL_REFRESH_TOKEN };
+  if (!t || !t.refresh_token) { const e = new Error('no roubler refresh token configured'); e.status = 401; throw e; }
+  if (t.access_token && t.expires_at && Date.now() < t.expires_at - 60000) return t.access_token;
+  const body = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: t.refresh_token });
+  const res = await fetch(ROUBLER.tokenUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Authorization: 'Basic ' + btoa((env.ROUBLER_CLIENT_ID || '') + ':' + (env.ROUBLER_CLIENT_SECRET || '')) },
+    body: body.toString()
+  });
+  if (!res.ok) { const e = new Error('roubler refresh failed: ' + (await res.text().catch(() => ''))); e.status = res.status; throw e; }
+  const fresh = await res.json();
+  // Roubler invalidates the old refresh token on every use, so the new one MUST be persisted or the next call breaks.
+  const updated = { access_token: fresh.access_token, refresh_token: fresh.refresh_token || t.refresh_token, expires_at: Date.now() + ((fresh.expires_in || 1800) * 1000) };
+  await saveTokens(env, 'roubler', updated);
+  return updated.access_token;
+}
+async function roublerGraphQL(env, query, variables) {
+  const token = await roublerRefresh(env);
+  const res = await fetch(ROUBLER.graphqlUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({ operationName: query.operationName, variables: variables || {}, query: query.query })
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) { const e = new Error('roubler graphql failed'); e.status = res.status; e.body = data; throw e; }
+  return data;
+}
+async function roublerStatus(env) {
+  const configured = !!(env.ROUBLER_CLIENT_ID && env.ROUBLER_CLIENT_SECRET && (env.ROUBLER_INITIAL_REFRESH_TOKEN || (await getTokens(env, 'roubler'))));
+  if (!configured) return { configured: false, connected: false };
+  try { await roublerRefresh(env); return { configured: true, connected: true, lastSync: await lastSync(env, 'roubler') }; }
+  catch (err) { return { configured: true, connected: false, error: { code: err.status || 0, message: String(err.message || err) } }; }
+}
+
 async function xeroRefresh(env) {
   const t = await getTokens(env, 'accounting');
   if (!t || !t.access_token) { const e = new Error('no tokens'); e.status = 401; throw e; }
@@ -537,7 +579,7 @@ async function apiMetrics(env, url) {
     catch (e) { trackingError = String(e && e.message || e); }
   }
 
-  const [accStatus, posStatus] = await Promise.all([accountingStatus(env), squareStatus(env)]);
+  const [accStatus, posStatus, rosterStatus] = await Promise.all([accountingStatus(env), squareStatus(env), roublerStatus(env)]);
   const periods = {};
   periods.cur = await slot(env, c.from, c.to, trackingIds, venue);
   periods.prev = p ? await slot(env, p.from, p.to, trackingIds, venue) : null;
@@ -549,7 +591,7 @@ async function apiMetrics(env, url) {
     sources: {
       accounting: accStatus,
       pos: { configured: true, connected: venue === 'guncotton' ? true : !!posStatus.connected, org: venue === 'guncotton' ? 'Bepoz' : (posStatus.org || null), sandbox: false, lastSync: await lastSync(env, 'pos') },
-      rostering: { configured: false }
+      rostering: rosterStatus
     },
     periods
   });
@@ -710,6 +752,22 @@ export default {
           const days = bucketPaymentsDaily(payments);
           return json({ from, to, days });
         } catch (e) { return json({ from, to, days: [], error: String(e && e.message || e) }); }
+      }
+    }
+    // One-off, read-only test of the Roubler staging integration — runs the ListEmployees query
+    // Roubler's own docs gave us. Its raw output/errors are exactly the "test results" Joyce asked for.
+    if (path === '/api/roubler-test') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const listEmployees = {
+        operationName: 'ListEmployees',
+        query: 'query ListEmployees($rosterable: Boolean, $onlyDeleted: Boolean, $statuses: [EmployeeStatus!], $visible: Boolean, $locationId: ID, $positionId: ID, $paygroupId: ID) {  employees(rosterable: $rosterable, onlyDeleted: $onlyDeleted, statuses: $statuses, visible: $visible, locationId: $locationId, positionId: $positionId, paygroupId: $paygroupId) {id location { id name } position { id name } payType startDate person { id firstName lastName fullName gender dateOfBirth } rosterable }}'
+      };
+      try {
+        const data = await roublerGraphQL(env, listEmployees, { statuses: ['Active'], rosterable: true, visible: true, locationId: null, positionId: null, paygroupId: null });
+        await noteSync(env, 'roubler');
+        return json({ ok: true, testedAt: new Date().toISOString(), result: data });
+      } catch (e) {
+        return json({ ok: false, testedAt: new Date().toISOString(), error: String(e && e.message || e), status: e.status || null, body: e.body || null }, 200);
       }
     }
     if (path === '/api/bepoz-inbox') {
