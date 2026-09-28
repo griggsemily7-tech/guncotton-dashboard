@@ -270,8 +270,20 @@ async function xeroPL(env, from, to, trackingIds) {
   return { revenue, cogs, wagesSuper, overheads, wageLabels: wageRows.map((r) => r.label) };
 }
 
-// Venues map to options on Xero's existing "Location" tracking category.
-const VENUE_TRACKING_OPTION = { guncotton: 'Cafe', doughgirlz: 'Dough Girlz' };
+// Venues map to one or more options on Xero's existing "Location" tracking category — Xero can't
+// OR multiple options of the same category in one report call, so we fetch each and sum them.
+const VENUE_TRACKING_OPTIONS = { guncotton: ['Cafe'], doughgirlz: ['Dough Girlz', 'Cart'] };
+async function xeroPLCombined(env, from, to, trackingIdsList) {
+  if (!trackingIdsList || !trackingIdsList.length) return xeroPL(env, from, to, null);
+  const parts = await Promise.all(trackingIdsList.map((ids) => xeroPL(env, from, to, ids)));
+  return parts.reduce((a, p) => ({
+    revenue: a.revenue + p.revenue,
+    cogs: a.cogs + p.cogs,
+    wagesSuper: a.wagesSuper + p.wagesSuper,
+    overheads: a.overheads + p.overheads,
+    wageLabels: [...a.wageLabels, ...p.wageLabels]
+  }), { revenue: 0, cogs: 0, wagesSuper: 0, overheads: 0, wageLabels: [] });
+}
 
 // Looks up both GUIDs Xero needs (category + option) for a tracking option, caching in KV since they never change.
 async function getTrackingIds(env, categoryName, optionName) {
@@ -427,9 +439,9 @@ async function accountingStatus(env) {
     return { configured: true, connected: false, error: { code: err.status || 0 } };
   }
 }
-async function slot(env, from, to, trackingIds, venue) {
+async function slot(env, from, to, trackingIdsList, venue) {
   const out = { accounting: null, pos: null };
-  try { out.accounting = await xeroPL(env, from, to, trackingIds); await noteSync(env, 'accounting'); } catch (e) { out.accountingError = String(e && e.message || e); }
+  try { out.accounting = await xeroPLCombined(env, from, to, trackingIdsList); await noteSync(env, 'accounting'); } catch (e) { out.accountingError = String(e && e.message || e); }
   if (venue === 'guncotton') {
     try {
       const b = await bepozRangeStats(env, from, to);
@@ -572,18 +584,18 @@ async function apiMetrics(env, url) {
   const c = parseR(cur); if (!c) return json({ error: 'bad range' }, 400);
   const p = parseR(prev), y = parseR(yoy);
 
-  let trackingIds = null, trackingError = null;
-  const optionName = venue && VENUE_TRACKING_OPTION[venue];
-  if (optionName) {
-    try { trackingIds = await getTrackingIds(env, 'Location', optionName); }
+  let trackingIdsList = null, trackingError = null;
+  const optionNames = venue && VENUE_TRACKING_OPTIONS[venue];
+  if (optionNames) {
+    try { trackingIdsList = await Promise.all(optionNames.map((name) => getTrackingIds(env, 'Location', name))); }
     catch (e) { trackingError = String(e && e.message || e); }
   }
 
   const [accStatus, posStatus, rosterStatus] = await Promise.all([accountingStatus(env), squareStatus(env), roublerStatus(env)]);
   const periods = {};
-  periods.cur = await slot(env, c.from, c.to, trackingIds, venue);
-  periods.prev = p ? await slot(env, p.from, p.to, trackingIds, venue) : null;
-  periods.yoy = y ? await slot(env, y.from, y.to, trackingIds, venue) : null;
+  periods.cur = await slot(env, c.from, c.to, trackingIdsList, venue);
+  periods.prev = p ? await slot(env, p.from, p.to, trackingIdsList, venue) : null;
+  periods.yoy = y ? await slot(env, y.from, y.to, trackingIdsList, venue) : null;
   return json({
     generatedAt: new Date().toISOString(),
     venue: venue || 'combined',
