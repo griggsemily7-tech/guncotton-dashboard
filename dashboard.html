@@ -152,6 +152,7 @@ async function fetchData(){
   const myGen = ++fetchGen;
   document.getElementById('cards').innerHTML = '<div style="color:var(--muted);padding:20px 0">Loading…</div>';
   const period = document.getElementById('period').value;
+  localStorage.setItem('vd_period', period);
   const r = rangeFor(period);
   const url = '/api/metrics?cur='+r.from+':'+r.to+'&venue='+currentVenue+'&_='+Date.now();
   const res = await fetch(url, {cache:'no-store'});
@@ -314,6 +315,8 @@ function saveSettings(){
 async function logout(){ await fetch('/api/logout',{method:'POST'}); location.reload(); }
 
 loadSettings();
+const savedPeriod = localStorage.getItem('vd_period');
+if (savedPeriod) document.getElementById('period').value = savedPeriod;
 fetchData();
 </script>
 </body>
