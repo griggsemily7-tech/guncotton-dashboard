@@ -148,9 +148,9 @@ function rangeFor(period){
 }
 
 let fetchGen = 0;
-async function fetchData(){
+async function fetchData(silent){
   const myGen = ++fetchGen;
-  document.getElementById('cards').innerHTML = '<div style="color:var(--muted);padding:20px 0">Loading…</div>';
+  if(!silent) document.getElementById('cards').innerHTML = '<div style="color:var(--muted);padding:20px 0">Loading…</div>';
   const period = document.getElementById('period').value;
   localStorage.setItem('vd_period', period);
   const r = rangeFor(period);
@@ -166,13 +166,17 @@ async function fetchData(){
   const posLabel = currentVenue==='guncotton' ? 'Bepoz' : 'Square';
   document.getElementById('bpzHoursTitle').textContent = 'Hourly sales today · from '+posLabel;
   document.getElementById('dailyTitle').textContent = 'Daily sales this period · from '+posLabel;
-  fetchPosHours(myGen);
-  fetchDailySales(r, myGen);
+  fetchPosHours(myGen, silent);
+  fetchDailySales(r, myGen, silent);
 }
 
-async function fetchPosHours(myGen){
+// Quietly refresh in the background so new sales show up without the user needing to reload —
+// no loading flicker, and any switch to a new tab/period (fetchGen changing) cancels a stale poll.
+setInterval(() => { if(document.visibilityState === 'visible') fetchData(true); }, 20000);
+
+async function fetchPosHours(myGen, silent){
   const el = document.getElementById('bpzHours');
-  el.innerHTML = '<span style="color:var(--muted)">Loading…</span>';
+  if(!silent) el.innerHTML = '<span style="color:var(--muted)">Loading…</span>';
   try{
     const today = new Date();
     const dateStr = today.getFullYear()+'-'+String(today.getMonth()+1).padStart(2,'0')+'-'+String(today.getDate()).padStart(2,'0');
@@ -192,9 +196,9 @@ async function fetchPosHours(myGen){
   }catch(e){ if(myGen===fetchGen) el.innerHTML = '<span style="color:var(--muted)">Not available</span>'; }
 }
 
-async function fetchDailySales(r, myGen){
+async function fetchDailySales(r, myGen, silent){
   const el = document.getElementById('dailySales');
-  el.innerHTML = '<span style="color:var(--muted)">Loading…</span>';
+  if(!silent) el.innerHTML = '<span style="color:var(--muted)">Loading…</span>';
   try{
     const res = await fetch('/api/pos-daily?venue='+currentVenue+'&from='+r.from+'&to='+r.to, {cache:'no-store'});
     if(myGen !== fetchGen) return;
