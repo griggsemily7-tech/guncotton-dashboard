@@ -799,6 +799,20 @@ export default {
     }
     // One-off diagnostic: compares the untracked (whole-business) P&L total against the sum of every
     // known "Location" option for the same period, so we can see how much revenue/COGS isn't tagged at all.
+    // Flags if Bepoz's hourly emails have gone quiet during trading hours — catches a broken
+    // pipeline (mail rule turned off, CloudMailin issue, etc.) the same day rather than days later.
+    if (path === '/api/bepoz-health') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const list = await env.TOKENS.list({ prefix: 'bepoz:' });
+      const keys = list.keys.map(k => k.name).sort();
+      const lastKey = keys[keys.length - 1] || null;
+      const lastReceivedAt = lastKey ? lastKey.slice('bepoz:'.length) : null;
+      const minutesSinceLast = lastReceivedAt ? Math.round((Date.now() - new Date(lastReceivedAt).getTime()) / 60000) : null;
+      const nowBrisbane = toBrisbane(new Date());
+      const withinTradingHours = nowBrisbane.hour >= 6 && nowBrisbane.hour < 20;
+      const warning = withinTradingHours && (minutesSinceLast === null || minutesSinceLast > 90);
+      return json({ lastReceivedAt, minutesSinceLast, withinTradingHours, warning });
+    }
     if (path === '/api/tracking-audit') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       const from = url.searchParams.get('from'), to = url.searchParams.get('to');
