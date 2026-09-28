@@ -187,11 +187,22 @@ async function roublerGraphQL(env, query, variables) {
   if (!res.ok) { const e = new Error('roubler graphql failed'); e.status = res.status; e.body = data; throw e; }
   return data;
 }
+// Small generic cache for slow, rarely-changing status checks — avoids hitting Square/Roubler
+// on every single dashboard load just to show a "connected" badge.
+async function cached(env, key, ttlSeconds, fn) {
+  const hit = await env.TOKENS.get(key);
+  if (hit) return JSON.parse(hit);
+  const value = await fn();
+  await env.TOKENS.put(key, JSON.stringify(value), { expirationTtl: ttlSeconds });
+  return value;
+}
 async function roublerStatus(env) {
-  const configured = !!(env.ROUBLER_CLIENT_ID && env.ROUBLER_CLIENT_SECRET && (env.ROUBLER_INITIAL_REFRESH_TOKEN || (await getTokens(env, 'roubler'))));
-  if (!configured) return { configured: false, connected: false };
-  try { await roublerRefresh(env); return { configured: true, connected: true, lastSync: await lastSync(env, 'roubler') }; }
-  catch (err) { return { configured: true, connected: false, error: { code: err.status || 0, message: String(err.message || err) } }; }
+  return cached(env, 'status-cache:roubler', 60, async () => {
+    const configured = !!(env.ROUBLER_CLIENT_ID && env.ROUBLER_CLIENT_SECRET && (env.ROUBLER_INITIAL_REFRESH_TOKEN || (await getTokens(env, 'roubler'))));
+    if (!configured) return { configured: false, connected: false };
+    try { await roublerRefresh(env); return { configured: true, connected: true, lastSync: await lastSync(env, 'roubler') }; }
+    catch (err) { return { configured: true, connected: false, error: { code: err.status || 0, message: String(err.message || err) } }; }
+  });
 }
 
 async function xeroRefresh(env) {
@@ -312,22 +323,24 @@ async function bepozRangeStats(env, from, to) {
 }
 // Same data, broken out per day instead of summed — powers the "Daily sales" panel.
 async function bepozDailyBreakdown(env, from, to) {
-  const out = [];
+  const dateStrs = [];
   const start = new Date(from + 'T00:00:00'), end = new Date(to + 'T00:00:00');
   for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    const dateStr = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    dateStrs.push(d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'));
+  }
+  // Every day's KV reads are independent, so fetch all days concurrently instead of one at a time.
+  return Promise.all(dateStrs.map(async (dateStr) => {
     const list = await env.TOKENS.list({ prefix: 'bpzhour:' + dateStr + ':' });
+    const records = await Promise.all(list.keys.map((k) => env.TOKENS.get(k.name)));
     let count = 0, sales = 0;
-    for (const k of list.keys) {
-      const raw = await env.TOKENS.get(k.name);
+    for (const raw of records) {
       if (!raw) continue;
       const rec = JSON.parse(raw);
       if (typeof rec.count === 'number') count += rec.count;
       if (typeof rec.nett === 'number') sales += rec.nett;
     }
-    out.push({ date: dateStr, count, sales });
-  }
-  return out;
+    return { date: dateStr, count, sales };
+  }));
 }
 
 /* ---------------- Square (POS) ---------------- */
@@ -387,12 +400,14 @@ function bucketPaymentsDaily(payments) {
   return Object.keys(buckets).sort().map((d) => ({ date: d, count: buckets[d].count, sales: (buckets[d].cents / 100) / 1.1 }));
 }
 async function squareStatus(env) {
-  if (!env.POS_API_TOKEN) return { connected: false };
-  const res = await fetch('https://connect.squareup.com/v2/locations', { headers: { Authorization: 'Bearer ' + env.POS_API_TOKEN, 'Square-Version': '2025-01-23' } });
-  if (!res.ok) return { connected: false, error: res.status };
-  const data = await res.json();
-  const loc = (data.locations || [])[0];
-  return { connected: true, org: loc ? loc.name : null, sandbox: false };
+  return cached(env, 'status-cache:square', 60, async () => {
+    if (!env.POS_API_TOKEN) return { connected: false };
+    const res = await fetch('https://connect.squareup.com/v2/locations', { headers: { Authorization: 'Bearer ' + env.POS_API_TOKEN, 'Square-Version': '2025-01-23' } });
+    if (!res.ok) return { connected: false, error: res.status };
+    const data = await res.json();
+    const loc = (data.locations || [])[0];
+    return { connected: true, org: loc ? loc.name : null, sandbox: false };
+  });
 }
 
 /* ---------------- OAuth begin/callback (Xero only) ---------------- */
