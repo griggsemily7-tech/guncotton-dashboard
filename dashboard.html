@@ -27,6 +27,11 @@
   .mcard .value.warn{color:var(--warn)}
   .mcard .value.alert{color:var(--bad)}
   .mcard .desc{font-size:12px;color:var(--muted)}
+  .mcard.big .value{font-size:32px}
+  .mcard.small{padding:12px 16px}
+  .mcard.small .value{font-size:20px;margin:4px 0}
+  .mcard .src{float:right;font-size:10px;letter-spacing:0;text-transform:none;opacity:.7}
+  .mcard .delta{font-size:12px;white-space:nowrap;margin-bottom:2px}
   .notconfigured{color:var(--muted);font-style:italic}
   .conn-row{display:flex;justify-content:space-between;align-items:center;background:var(--card);padding:14px;border-radius:10px;margin-bottom:10px}
   .pill{padding:4px 10px;border-radius:999px;font-size:12px}
@@ -115,22 +120,22 @@
 <script>
 const METRICS_BY_VENUE = {
   guncotton: [
-    {key:'revenue', label:'Revenue', desc:'Cafe trading income, ex-GST · from Xero (Location: Cafe)'},
-    {key:'count', label:'Number of transactions', desc:'Completed transactions · from Bepoz'},
-    {key:'acs', label:'Average customer spend', desc:'Revenue ÷ transactions'},
-    {key:'cogs', label:'Cost of goods', desc:'Cost of Sales accounts, ex-GST · from Xero'},
-    {key:'wagepct', label:'Wage %', desc:'(Wages + super) ÷ revenue · from Xero'},
-    {key:'overheads', label:'Overheads', desc:'Operating expenses excl. wages/super/COGS · from Xero'},
-    {key:'profit', label:'Profit', desc:'Revenue less COGS, wages+super, overheads'}
+    {key:'revenue', label:'Revenue', src:'Bepoz', primary:true},
+    {key:'count', label:'Transactions', src:'Bepoz', primary:true},
+    {key:'acs', label:'Avg spend', src:'', primary:true},
+    {key:'cogs', label:'Cost of goods', src:'Xero'},
+    {key:'wagepct', label:'Wage %', src:'Xero'},
+    {key:'overheads', label:'Overheads', src:'Xero'},
+    {key:'profit', label:'Profit', src:'Xero'}
   ],
   doughgirlz: [
-    {key:'revenue', label:'Revenue', desc:'Doughgirlz trading income, ex-GST · from Xero (Location: Dough Girlz)'},
-    {key:'count', label:'Number of transactions', desc:'Completed transactions · from Square'},
-    {key:'acs', label:'Average customer spend', desc:'Revenue ÷ transactions'},
-    {key:'cogs', label:'Cost of goods', desc:'Cost of Sales accounts, ex-GST · from Xero'},
-    {key:'wagepct', label:'Wage %', desc:'(Wages + super) ÷ revenue · from Xero'},
-    {key:'overheads', label:'Overheads', desc:'Operating expenses excl. wages/super/COGS · from Xero'},
-    {key:'profit', label:'Profit', desc:'Revenue less COGS, wages+super, overheads'}
+    {key:'revenue', label:'Revenue', src:'Square', primary:true},
+    {key:'count', label:'Transactions', src:'Square', primary:true},
+    {key:'acs', label:'Avg spend', src:'', primary:true},
+    {key:'cogs', label:'Cost of goods', src:'Xero'},
+    {key:'wagepct', label:'Wage %', src:'Xero'},
+    {key:'overheads', label:'Overheads', src:'Xero'},
+    {key:'profit', label:'Profit', src:'Xero'}
   ]
 };
 let currentVenue = localStorage.getItem('vd_venue') || 'guncotton';
@@ -343,6 +348,7 @@ function renderCards(data){
   const pWagepct = (pAcc && pRevenue) ? (pAcc.wagesSuper/pRevenue) : null;
   const pProfit = pAcc ? (pRevenue - pAcc.cogs - pAcc.wagesSuper - pAcc.overheads) : null;
 
+  const prevLabel = data.prevLabel || 'vs last period';
   function deltaBadge(curVal, prevVal, invert){
     if(curVal==null || prevVal==null || prevVal===0) return '';
     const pct = (curVal - prevVal) / Math.abs(prevVal) * 100;
@@ -350,12 +356,11 @@ function renderCards(data){
     const favorable = invert ? !goingUp : goingUp;
     const color = favorable ? 'var(--good)' : 'var(--bad)';
     const arrow = goingUp ? '▲' : '▼';
-    return '<span style="font-size:12px;font-weight:600;color:'+color+';margin-left:8px">'+arrow+' '+Math.abs(pct).toFixed(1)+'%</span>';
+    return '<span style="font-weight:600;color:'+color+'">'+arrow+' '+Math.abs(pct).toFixed(1)+'%</span> <span style="color:var(--muted)">'+prevLabel+'</span>';
   }
   const revenueBadge = deltaBadge(revenue, pRevenue, false);
   const profitBadge = deltaBadge(profit, pProfit, false);
   const wagepctBadge = deltaBadge(wagepct, pWagepct, true);
-  const prevLabel = data.prevLabel || 'vs last period';
 
   const vals = {
     revenue: revenue==null?null:fmtMoney(revenue),
@@ -378,32 +383,39 @@ function renderCards(data){
   if (!isNaN(wageTarget) && wagepct != null && wagepct !== '—' && (wagepct*100) > wageTarget) cls.wagepct = 'warn';
   if (!isNaN(cogsTarget) && cogsPct != null && cogsPct > cogsTarget) cls.cogs = 'warn';
 
-  // A small "vs target" line under Wage %, Cost of goods, and Profit — makes the Settings targets actually actionable.
+  // Short target notes, only shown when a target is set in Settings.
   const targetLines = {};
-  if (!isNaN(wageTarget) && wagepct != null && wagepct !== '—') {
-    const diff = (wagepct*100) - wageTarget;
-    targetLines.wagepct = 'Target: '+wageTarget+'% • '+(diff<=0?'':'+'+diff.toFixed(1)+'pts over');
-    if(diff<=0) targetLines.wagepct = 'Target: '+wageTarget+'% • '+Math.abs(diff).toFixed(1)+'pts under (good)';
+  if (!isNaN(wageTarget) && wagepct != null) {
+    const diff = wagepct*100 - wageTarget;
+    targetLines.wagepct = diff<=0 ? 'Target '+wageTarget+'% ✓' : 'Target '+wageTarget+'% · '+diff.toFixed(1)+' pts over';
   }
   if (!isNaN(cogsTarget) && cogsPct != null) {
     const diff = cogsPct - cogsTarget;
-    targetLines.cogs = diff<=0 ? 'Target: '+cogsTarget+'% of revenue • '+Math.abs(diff).toFixed(1)+'pts under (good)' : 'Target: '+cogsTarget+'% of revenue • +'+diff.toFixed(1)+'pts over';
+    targetLines.cogs = diff<=0 ? 'Target '+cogsTarget+'% ✓' : 'Target '+cogsTarget+'% · '+diff.toFixed(1)+' pts over';
   }
   if (!isNaN(profitTarget) && profitPct != null) {
     const diff = profitPct - profitTarget;
-    targetLines.profit = diff>=0 ? 'Target: '+profitTarget+'% margin • +'+diff.toFixed(1)+'pts over (good)' : 'Target: '+profitTarget+'% margin • '+Math.abs(diff).toFixed(1)+'pts under';
+    targetLines.profit = diff>=0 ? 'Target '+profitTarget+'% ✓' : 'Target '+profitTarget+'% · '+Math.abs(diff).toFixed(1)+' pts short';
   }
 
-  const cardsEl = document.getElementById('cards');
-  cardsEl.innerHTML = METRICS.map(m=>{
+  const card = (m) => {
     const v = vals[m.key];
     const cssClass = cls[m.key] ? ' ' + cls[m.key] : '';
-    const badge = badges[m.key] ? badges[m.key] + '<span style="font-size:11px;color:var(--muted);margin-left:4px">'+prevLabel+'</span>' : '';
-    const targetLine = targetLines[m.key] ? '<div class="desc" style="margin-top:4px">'+targetLines[m.key]+'</div>' : '';
-    return '<div class="mcard"><div class="label">'+m.label+'</div>'+
-      (v==null ? '<div class="value notconfigured">Not configured</div>' : '<div class="value'+cssClass+'">'+v+badge+'</div>')+
-      '<div class="desc">'+m.desc+'</div>'+targetLine+'</div>';
-  }).join('');
+    const src = m.src ? '<span class="src">'+m.src+'</span>' : '';
+    const badge = badges[m.key] ? '<div class="delta">'+badges[m.key]+'</div>' : '';
+    const note = targetLines[m.key] ? '<div class="desc">'+targetLines[m.key]+'</div>' : '';
+    return '<div class="mcard '+(m.primary?'big':'small')+'"><div class="label">'+m.label+src+'</div>'+
+      (v==null ? '<div class="value notconfigured">Not configured</div>' : '<div class="value'+cssClass+'">'+v+'</div>')+
+      badge+note+'</div>';
+  };
+  const isToday = document.getElementById('period').value === 'today';
+  const primaryHtml = METRICS.filter(m=>m.primary).map(card).join('');
+  // Costs, wages and profit come from Xero, which isn't entered day by day, so on "Today" they'd
+  // just read $0 and mislead. Show a one-line note instead and keep the live sales figures clean.
+  const secondaryHtml = isToday
+    ? '<div style="grid-column:1/-1;color:var(--muted);font-size:13px;padding:2px">Costs, wages and profit come from Xero, so they show in the week and month views.</div>'
+    : METRICS.filter(m=>!m.primary).map(card).join('');
+  document.getElementById('cards').innerHTML = primaryHtml + secondaryHtml;
 }
 
 function renderConnections(data){
