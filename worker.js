@@ -770,6 +770,31 @@ export default {
         return json({ ok: false, testedAt: new Date().toISOString(), error: String(e && e.message || e), status: e.status || null, body: e.body || null }, 200);
       }
     }
+    // One-off diagnostic: compares the untracked (whole-business) P&L total against the sum of every
+    // known "Location" option for the same period, so we can see how much revenue/COGS isn't tagged at all.
+    if (path === '/api/tracking-audit') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const from = url.searchParams.get('from'), to = url.searchParams.get('to');
+      if (!from || !to) return json({ error: 'bad range' }, 400);
+      const optionNames = ['Cafe', 'Cart', 'Dough Girlz', 'Other', 'Pending Job Code', 'Roastery'];
+      const combined = await xeroPL(env, from, to, null);
+      const byOption = {};
+      for (const name of optionNames) {
+        try {
+          const ids = await getTrackingIds(env, 'Location', name);
+          const r = await xeroPL(env, from, to, ids);
+          byOption[name] = { revenue: r.revenue, cogs: r.cogs };
+        } catch (e) { byOption[name] = { error: String(e && e.message || e) }; }
+      }
+      const sumRevenue = Object.values(byOption).reduce((a, o) => a + (o.revenue || 0), 0);
+      const sumCogs = Object.values(byOption).reduce((a, o) => a + (o.cogs || 0), 0);
+      return json({
+        from, to,
+        combined: { revenue: combined.revenue, cogs: combined.cogs },
+        byOption,
+        untagged: { revenue: combined.revenue - sumRevenue, cogs: combined.cogs - sumCogs }
+      });
+    }
     if (path === '/api/bepoz-inbox') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       const list = await env.TOKENS.list({ prefix: 'bepoz:' });
