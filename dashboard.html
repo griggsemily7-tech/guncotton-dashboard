@@ -72,6 +72,10 @@
     <div id="dailyTitle" style="font-size:12px;color:var(--muted);letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px">Daily sales this period</div>
     <div id="dailySales" style="background:var(--card);border-radius:12px;padding:16px"></div>
   </div>
+  <div style="margin-top:20px">
+    <div id="compareTitle" style="font-size:12px;color:var(--muted);letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px">Today vs last week</div>
+    <div id="compareChart" style="background:var(--card);border-radius:12px;padding:16px"></div>
+  </div>
 </div>
 
 <div id="view-connections" style="display:none">
@@ -168,6 +172,7 @@ async function fetchData(silent){
   document.getElementById('dailyTitle').textContent = 'Daily sales this period · from '+posLabel;
   fetchPosHours(myGen, silent);
   fetchDailySales(r, myGen, silent);
+  fetchCompareChart(myGen, silent);
 }
 
 // Quietly refresh in the background so new sales show up without the user needing to reload —
@@ -214,6 +219,66 @@ async function fetchDailySales(r, myGen, silent){
       '</div>'
     ).join('');
   }catch(e){ if(myGen===fetchGen) el.innerHTML = '<span style="color:var(--muted)">Not available</span>'; }
+}
+
+async function fetchCompareChart(myGen, silent){
+  const el = document.getElementById('compareChart');
+  if(!silent) el.innerHTML = '<span style="color:var(--muted)">Loading…</span>';
+  const fmt = (d)=> d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  const today = new Date();
+  const lastWeek = new Date(today); lastWeek.setDate(lastWeek.getDate()-7);
+  const todayStr = fmt(today), lastWeekStr = fmt(lastWeek);
+  const weekdayName = today.toLocaleDateString(undefined,{weekday:'long'});
+  document.getElementById('compareTitle').textContent = 'Today vs last '+weekdayName;
+  try{
+    const [resToday, resLastWeek] = await Promise.all([
+      fetch('/api/pos-hours?venue='+currentVenue+'&date='+todayStr, {cache:'no-store'}),
+      fetch('/api/pos-hours?venue='+currentVenue+'&date='+lastWeekStr, {cache:'no-store'})
+    ]);
+    if(myGen !== fetchGen) return;
+    if(!resToday.ok || !resLastWeek.ok){ el.innerHTML = '<span style="color:var(--muted)">Not available</span>'; return; }
+    const dataToday = await resToday.json(), dataLastWeek = await resLastWeek.json();
+    if(myGen !== fetchGen) return;
+    if((!dataToday.hours || !dataToday.hours.length) && (!dataLastWeek.hours || !dataLastWeek.hours.length)){
+      el.innerHTML = '<span style="color:var(--muted)">No sales recorded for either day yet</span>'; return;
+    }
+    // Build cumulative running totals per hour-of-day (0-23) so the chart shows "running total so far" for each line.
+    const cumulative = (hours) => {
+      const byHour = {};
+      (hours||[]).forEach(h=>{ const hr = parseInt(h.hourLabel.split(':')[0],10); byHour[hr] = h.nett; });
+      let running = 0; const out = [];
+      for(let h=0; h<24; h++){ if(byHour[h]!=null){ running += byHour[h]; out.push({hour:h, value:running}); } }
+      return out;
+    };
+    const todaySeries = cumulative(dataToday.hours);
+    const lastWeekSeries = cumulative(dataLastWeek.hours);
+    el.innerHTML = renderCompareSvg(todaySeries, lastWeekSeries);
+  }catch(e){ if(myGen===fetchGen) el.innerHTML = '<span style="color:var(--muted)">Not available</span>'; }
+}
+
+function renderCompareSvg(todaySeries, lastWeekSeries){
+  const W=760, H=220, padL=50, padR=16, padT=16, padB=30;
+  const allPoints = todaySeries.concat(lastWeekSeries);
+  if(!allPoints.length) return '<span style="color:var(--muted)">No sales recorded for either day yet</span>';
+  const maxVal = Math.max(1, ...allPoints.map(p=>p.value));
+  const x = (h)=> padL + (h/23)*(W-padL-padR);
+  const y = (v)=> H-padB - (v/maxVal)*(H-padT-padB);
+  const path = (series)=> series.length ? 'M'+series.map(p=>x(p.hour)+','+y(p.value)).join(' L') : '';
+  const gridLines = [0,0.25,0.5,0.75,1].map(f=>{
+    const val = maxVal*f;
+    const yy = y(val);
+    return '<line x1="'+padL+'" y1="'+yy+'" x2="'+(W-padR)+'" y2="'+yy+'" stroke="rgba(255,255,255,.08)" stroke-width="1"/>'+
+      '<text x="4" y="'+(yy+4)+'" font-size="10" fill="#9aa5b1">$'+Math.round(val).toLocaleString()+'</text>';
+  }).join('');
+  const hourLabels = [0,6,12,18,23].map(h=>'<text x="'+x(h)+'" y="'+(H-8)+'" font-size="10" fill="#9aa5b1" text-anchor="middle">'+h+':00</text>').join('');
+  const lastWeekLine = lastWeekSeries.length ? '<path d="'+path(lastWeekSeries)+'" fill="none" stroke="#9aa5b1" stroke-width="2" stroke-dasharray="4,3"/>' : '';
+  const todayLine = todaySeries.length ? '<path d="'+path(todaySeries)+'" fill="none" stroke="#3b82f6" stroke-width="2.5"/>' : '';
+  const todayDot = todaySeries.length ? (()=>{ const last = todaySeries[todaySeries.length-1]; return '<circle cx="'+x(last.hour)+'" cy="'+y(last.value)+'" r="4" fill="#3b82f6"/>'; })() : '';
+  const legend = '<div style="display:flex;gap:20px;margin-top:8px;font-size:12px;color:var(--muted)">'+
+    '<span><span style="display:inline-block;width:14px;height:3px;background:#3b82f6;vertical-align:middle;margin-right:6px"></span>Today</span>'+
+    '<span><span style="display:inline-block;width:14px;height:0;border-top:2px dashed #9aa5b1;vertical-align:middle;margin-right:6px"></span>Last week</span>'+
+    '</div>';
+  return '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:auto">'+gridLines+hourLabels+lastWeekLine+todayLine+todayDot+'</svg>'+legend;
 }
 
 
