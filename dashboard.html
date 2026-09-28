@@ -87,7 +87,7 @@
     <div id="dailyTitle" style="font-size:12px;color:var(--muted);letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px">Daily sales this period</div>
     <div id="dailySales" style="background:var(--card);border-radius:12px;padding:16px"></div>
   </div>
-  <div style="margin-top:20px">
+  <div id="compareWrap" style="margin-top:20px">
     <div id="compareTitle" style="font-size:12px;color:var(--muted);letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px">Today vs last week</div>
     <div id="compareChart" style="background:var(--card);border-radius:12px;padding:16px"></div>
   </div>
@@ -208,7 +208,7 @@ async function fetchData(silent){
   hourlySection.style.display = (period==='today') ? 'block' : 'none';
   if(period==='today') fetchPosHours(myGen, silent);
   fetchDailySales(r, myGen, silent);
-  fetchCompareChart(myGen, silent);
+  fetchCompareChart(myGen, silent, period, r, pr);
 }
 
 async function fetchBepozHealth(myGen){
@@ -279,66 +279,139 @@ async function fetchDailySales(r, myGen, silent){
   }catch(e){ if(myGen===fetchGen) el.innerHTML = '<span style="color:var(--muted)">Not available</span>'; }
 }
 
-async function fetchCompareChart(myGen, silent){
+const COMPARE_TITLES = {
+  today: null,
+  week: ['This week vs last week · daily sales', 'This week', 'Last week'],
+  lastweek: ['Last week vs the week before · daily sales', 'Last week', 'Week before'],
+  month: ['This month vs last month · running total', 'This month', 'Last month'],
+  lastmonth: ['Last month vs the month before · running total', 'Last month', 'Month before']
+};
+const fmtD = (d)=> d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+function addDays(dateStr, n){ const d = new Date(dateStr+'T00:00:00'); d.setDate(d.getDate()+n); return fmtD(d); }
+function daysBetween(from, to){ return Math.round((new Date(to+'T00:00:00') - new Date(from+'T00:00:00'))/86400000) + 1; }
+
+async function fetchCompareChart(myGen, silent, period, r, pr){
+  const wrap = document.getElementById('compareWrap');
   const el = document.getElementById('compareChart');
+  // A whole financial year is too big to compare day by day, so no chart for those views.
+  if(period==='fy' || period==='lastfy'){ wrap.style.display = 'none'; return; }
+  wrap.style.display = 'block';
   if(!silent) el.innerHTML = '<span style="color:var(--muted)">Loading…</span>';
-  const fmt = (d)=> d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
-  const today = new Date();
-  const lastWeek = new Date(today); lastWeek.setDate(lastWeek.getDate()-7);
-  const todayStr = fmt(today), lastWeekStr = fmt(lastWeek);
-  const weekdayName = today.toLocaleDateString(undefined,{weekday:'long'});
-  document.getElementById('compareTitle').textContent = 'Today vs last '+weekdayName;
   try{
-    const [resToday, resLastWeek] = await Promise.all([
-      fetch('/api/pos-hours?venue='+currentVenue+'&date='+todayStr, {cache:'no-store'}),
-      fetch('/api/pos-hours?venue='+currentVenue+'&date='+lastWeekStr, {cache:'no-store'})
-    ]);
+    if(period==='today') return await todayCompareChart(myGen, el);
+    const cfg = COMPARE_TITLES[period];
+    document.getElementById('compareTitle').textContent = cfg[0];
+    const res = await fetch('/api/pos-compare?venue='+currentVenue+'&from='+r.from+'&to='+r.to+'&pfrom='+pr.from+'&pto='+pr.to, {cache:'no-store'});
     if(myGen !== fetchGen) return;
-    if(!resToday.ok || !resLastWeek.ok){ el.innerHTML = '<span style="color:var(--muted)">Not available</span>'; return; }
-    const dataToday = await resToday.json(), dataLastWeek = await resLastWeek.json();
+    if(!res.ok){ el.innerHTML = '<span style="color:var(--muted)">Not available</span>'; return; }
+    const data = await res.json();
     if(myGen !== fetchGen) return;
-    if((!dataToday.hours || !dataToday.hours.length) && (!dataLastWeek.hours || !dataLastWeek.hours.length)){
-      el.innerHTML = '<span style="color:var(--muted)">No sales recorded for either day yet</span>'; return;
+    if(data.error){ el.innerHTML = '<span style="color:var(--muted)">Not available</span>'; return; }
+    const curMap = {}, prevMap = {};
+    (data.cur.days||[]).forEach(d=>{ curMap[d.date] = d.sales; });
+    (data.prev.days||[]).forEach(d=>{ prevMap[d.date] = d.sales; });
+    const todayStr = fmtD(new Date());
+    const n = Math.max(daysBetween(r.from, r.to), daysBetween(pr.from, pr.to));
+    let svg;
+    if(period==='week' || period==='lastweek'){
+      const bars = [];
+      for(let i=0;i<7;i++){
+        const cd = addDays(r.from, i), pd = addDays(pr.from, i);
+        bars.push({
+          label: new Date(cd+'T00:00:00').toLocaleDateString('en-AU',{weekday:'short'}),
+          cur: cd <= todayStr ? (curMap[cd]||0) : null,
+          prev: prevMap[pd]||0
+        });
+      }
+      svg = renderBarsSvg(bars, cfg[1], cfg[2]);
+    } else {
+      const acc = (map, from, limitToToday) => { let run = 0; const out = []; for(let i=0;i<n;i++){ const d = addDays(from,i); if(limitToToday && d > todayStr) break; run += (map[d]||0); out.push({x:i, value:run}); } return out; };
+      const labels = [0, Math.round(n/4), Math.round(n/2), Math.round(3*n/4), n-1].map(i=>({x:i, label:String(i+1)}));
+      svg = renderCompareSvg(acc(curMap, r.from, true), acc(prevMap, pr.from, false), {xMax:n-1, xLabels:labels, labelA:cfg[1], labelB:cfg[2]});
     }
-    // Build cumulative running totals per hour-of-day (0-23) so the chart shows "running total so far" for each line.
-    const cumulative = (hours) => {
-      const byHour = {};
-      (hours||[]).forEach(h=>{ const hr = parseInt(h.hourLabel.split(':')[0],10); byHour[hr] = h.nett; });
-      let running = 0; const out = [];
-      for(let h=0; h<24; h++){ if(byHour[h]!=null){ running += byHour[h]; out.push({hour:h, value:running}); } }
-      return out;
-    };
-    const todaySeries = cumulative(dataToday.hours);
-    const lastWeekSeries = cumulative(dataLastWeek.hours);
-    el.innerHTML = renderCompareSvg(todaySeries, lastWeekSeries);
+    const pend = (data.cur.pending||0) + (data.prev.pending||0);
+    const note = pend>0 ? '<div style="margin-top:6px;font-size:12px;color:var(--muted)">Still loading '+pend+' earlier day'+(pend===1?'':'s')+' — this fills in over the next minute or two.</div>' : '';
+    el.innerHTML = svg + note;
   }catch(e){ if(myGen===fetchGen) el.innerHTML = '<span style="color:var(--muted)">Not available</span>'; }
 }
 
-function renderCompareSvg(todaySeries, lastWeekSeries){
+// Today view: hourly running total against the same weekday last week.
+async function todayCompareChart(myGen, el){
+  const today = new Date();
+  const lastWeek = new Date(today); lastWeek.setDate(lastWeek.getDate()-7);
+  const weekdayName = today.toLocaleDateString(undefined,{weekday:'long'});
+  document.getElementById('compareTitle').textContent = 'Today vs last '+weekdayName+' · running total';
+  const [resToday, resLastWeek] = await Promise.all([
+    fetch('/api/pos-hours?venue='+currentVenue+'&date='+fmtD(today), {cache:'no-store'}),
+    fetch('/api/pos-hours?venue='+currentVenue+'&date='+fmtD(lastWeek), {cache:'no-store'})
+  ]);
+  if(myGen !== fetchGen) return;
+  if(!resToday.ok || !resLastWeek.ok){ el.innerHTML = '<span style="color:var(--muted)">Not available</span>'; return; }
+  const dataToday = await resToday.json(), dataLastWeek = await resLastWeek.json();
+  if(myGen !== fetchGen) return;
+  if((!dataToday.hours || !dataToday.hours.length) && (!dataLastWeek.hours || !dataLastWeek.hours.length)){
+    el.innerHTML = '<span style="color:var(--muted)">No sales recorded for either day yet</span>'; return;
+  }
+  const cumulative = (hours) => {
+    const byHour = {};
+    (hours||[]).forEach(h=>{ byHour[parseInt(h.hourLabel.split(':')[0],10)] = h.nett; });
+    let running = 0; const out = [];
+    for(let hr=0; hr<24; hr++){ if(byHour[hr]!=null){ running += byHour[hr]; out.push({x:hr, value:running}); } }
+    return out;
+  };
+  el.innerHTML = renderCompareSvg(cumulative(dataToday.hours), cumulative(dataLastWeek.hours), {
+    xMax:23, xLabels:[0,6,12,18,23].map(x=>({x, label:x+':00'})), labelA:'Today', labelB:'Last '+weekdayName
+  });
+}
+
+function chartLegend(labelA, labelB, dashed){
+  return '<div style="display:flex;gap:20px;margin-top:8px;font-size:12px;color:var(--muted)">'+
+    '<span><span style="display:inline-block;width:14px;height:3px;background:#3b82f6;vertical-align:middle;margin-right:6px"></span>'+labelA+'</span>'+
+    '<span>'+(dashed
+      ? '<span style="display:inline-block;width:14px;height:0;border-top:2px dashed #9aa5b1;vertical-align:middle;margin-right:6px"></span>'
+      : '<span style="display:inline-block;width:14px;height:3px;background:#5b6675;vertical-align:middle;margin-right:6px"></span>')+labelB+'</span></div>';
+}
+
+// Running-total lines. series = [{x, value}]; opts = {xMax, xLabels:[{x,label}], labelA, labelB}
+function renderCompareSvg(seriesA, seriesB, opts){
   const W=760, H=220, padL=50, padR=16, padT=16, padB=30;
-  const allPoints = todaySeries.concat(lastWeekSeries);
-  if(!allPoints.length) return '<span style="color:var(--muted)">No sales recorded for either day yet</span>';
-  const maxVal = Math.max(1, ...allPoints.map(p=>p.value));
-  const x = (h)=> padL + (h/23)*(W-padL-padR);
+  const all = seriesA.concat(seriesB);
+  if(!all.length) return '<span style="color:var(--muted)">No sales recorded yet</span>';
+  const maxVal = Math.max(1, ...all.map(p=>p.value));
+  const x = (v)=> padL + (v/Math.max(1,opts.xMax))*(W-padL-padR);
   const y = (v)=> H-padB - (v/maxVal)*(H-padT-padB);
-  const path = (series)=> series.length ? 'M'+series.map(p=>x(p.hour)+','+y(p.value)).join(' L') : '';
-  const gridLines = [0,0.25,0.5,0.75,1].map(f=>{
-    const val = maxVal*f;
-    const yy = y(val);
+  const path = (s)=> s.length ? 'M'+s.map(p=>x(p.x)+','+y(p.value)).join(' L') : '';
+  const grid = [0,0.25,0.5,0.75,1].map(f=>{
+    const val = maxVal*f, yy = y(val);
     return '<line x1="'+padL+'" y1="'+yy+'" x2="'+(W-padR)+'" y2="'+yy+'" stroke="rgba(255,255,255,.08)" stroke-width="1"/>'+
       '<text x="4" y="'+(yy+4)+'" font-size="10" fill="#9aa5b1">$'+Math.round(val).toLocaleString()+'</text>';
   }).join('');
-  const hourLabels = [0,6,12,18,23].map(h=>'<text x="'+x(h)+'" y="'+(H-8)+'" font-size="10" fill="#9aa5b1" text-anchor="middle">'+h+':00</text>').join('');
-  const lastWeekLine = lastWeekSeries.length ? '<path d="'+path(lastWeekSeries)+'" fill="none" stroke="#9aa5b1" stroke-width="2" stroke-dasharray="4,3"/>' : '';
-  const todayLine = todaySeries.length ? '<path d="'+path(todaySeries)+'" fill="none" stroke="#3b82f6" stroke-width="2.5"/>' : '';
-  const todayDot = todaySeries.length ? (()=>{ const last = todaySeries[todaySeries.length-1]; return '<circle cx="'+x(last.hour)+'" cy="'+y(last.value)+'" r="4" fill="#3b82f6"/>'; })() : '';
-  const legend = '<div style="display:flex;gap:20px;margin-top:8px;font-size:12px;color:var(--muted)">'+
-    '<span><span style="display:inline-block;width:14px;height:3px;background:#3b82f6;vertical-align:middle;margin-right:6px"></span>Today</span>'+
-    '<span><span style="display:inline-block;width:14px;height:0;border-top:2px dashed #9aa5b1;vertical-align:middle;margin-right:6px"></span>Last week</span>'+
-    '</div>';
-  return '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:auto">'+gridLines+hourLabels+lastWeekLine+todayLine+todayDot+'</svg>'+legend;
+  const xl = opts.xLabels.map(l=>'<text x="'+x(l.x)+'" y="'+(H-8)+'" font-size="10" fill="#9aa5b1" text-anchor="middle">'+l.label+'</text>').join('');
+  const lineB = seriesB.length ? '<path d="'+path(seriesB)+'" fill="none" stroke="#9aa5b1" stroke-width="2" stroke-dasharray="4,3"/>' : '';
+  const lineA = seriesA.length ? '<path d="'+path(seriesA)+'" fill="none" stroke="#3b82f6" stroke-width="2.5"/>' : '';
+  const dot = seriesA.length ? (()=>{ const l = seriesA[seriesA.length-1]; return '<circle cx="'+x(l.x)+'" cy="'+y(l.value)+'" r="4" fill="#3b82f6"/>'; })() : '';
+  return '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:auto">'+grid+xl+lineB+lineA+dot+'</svg>'+chartLegend(opts.labelA, opts.labelB, true);
 }
 
+// Day-by-day bars for the week views. bars = [{label, cur, prev}] (cur null = day hasn't happened yet)
+function renderBarsSvg(bars, labelA, labelB){
+  const W=760, H=220, padL=50, padR=16, padT=16, padB=30;
+  const maxVal = Math.max(1, ...bars.map(b=>Math.max(b.cur||0, b.prev||0)));
+  const y = (v)=> H-padB - (v/maxVal)*(H-padT-padB);
+  const slot = (W-padL-padR)/bars.length, bw = Math.min(34, slot/2.6);
+  const grid = [0,0.25,0.5,0.75,1].map(f=>{
+    const val = maxVal*f, yy = y(val);
+    return '<line x1="'+padL+'" y1="'+yy+'" x2="'+(W-padR)+'" y2="'+yy+'" stroke="rgba(255,255,255,.08)" stroke-width="1"/>'+
+      '<text x="4" y="'+(yy+4)+'" font-size="10" fill="#9aa5b1">$'+Math.round(val).toLocaleString()+'</text>';
+  }).join('');
+  const rects = bars.map((b,i)=>{
+    const cx = padL + slot*i + slot/2;
+    const prevRect = '<rect x="'+(cx-bw-1)+'" y="'+y(b.prev||0)+'" width="'+bw+'" height="'+Math.max(0,(H-padB)-y(b.prev||0))+'" rx="3" fill="#5b6675"/>';
+    const curRect = b.cur==null ? '' : '<rect x="'+(cx+1)+'" y="'+y(b.cur)+'" width="'+bw+'" height="'+Math.max(0,(H-padB)-y(b.cur))+'" rx="3" fill="#3b82f6"/>';
+    return prevRect+curRect+'<text x="'+cx+'" y="'+(H-8)+'" font-size="11" fill="#9aa5b1" text-anchor="middle">'+b.label+'</text>';
+  }).join('');
+  return '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:auto">'+grid+rects+'</svg>'+chartLegend(labelA, labelB, false);
+}
 
 function renderBanner(data){
   const b = document.getElementById('banner');
@@ -375,9 +448,13 @@ function renderCards(data){
     const arrow = goingUp ? '▲' : '▼';
     return '<span style="font-weight:600;color:'+color+'">'+arrow+' '+Math.abs(pct).toFixed(1)+'%</span> <span style="color:var(--muted)">'+prevLabel+'</span>';
   }
-  const revenueBadge = deltaBadge(revenue, pRevenue, false);
-  const profitBadge = deltaBadge(profit, pProfit, false);
-  const wagepctBadge = deltaBadge(wagepct, pWagepct, true);
+  // If the earlier period has no revenue on record (e.g. before Bepoz data started being saved), every
+  // comparison built on it would be misleading, so say so once instead of showing bogus arrows.
+  const prevLoading = !!(prev.pos && prev.pos.pending > 0);
+  const noPrior = (pRevenue==null || pRevenue===0);
+  const revenueBadge = prevLoading ? '<span style="color:var(--muted)">Loading comparison…</span>' : noPrior ? (revenue!=null ? '<span style="color:var(--muted)">No comparison data yet</span>' : '') : deltaBadge(revenue, pRevenue, false);
+  const profitBadge = (noPrior || prevLoading) ? '' : deltaBadge(profit, pProfit, false);
+  const wagepctBadge = (noPrior || prevLoading) ? '' : deltaBadge(wagepct, pWagepct, true);
 
   const vals = {
     revenue: revenue==null?null:fmtMoney(revenue),
@@ -402,6 +479,7 @@ function renderCards(data){
 
   // Short target notes, only shown when a target is set in Settings.
   const targetLines = {};
+  if (pos && pos.pending > 0) targetLines.revenue = 'Still loading '+pos.pending+' earlier day'+(pos.pending===1?'':'s')+' — totals fill in shortly';
   if (!isNaN(wageTarget) && wagepct != null) {
     const diff = wagepct*100 - wageTarget;
     targetLines.wagepct = diff<=0 ? 'Target '+wageTarget+'% ✓' : 'Target '+wageTarget+'% · '+diff.toFixed(1)+' pts over';
