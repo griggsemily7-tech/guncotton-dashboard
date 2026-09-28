@@ -202,12 +202,13 @@ async function fetchData(silent){
   if(currentVenue==='guncotton') fetchBepozHealth(myGen); else document.getElementById('bepozHealthBanner').innerHTML = '';
   const posLabel = currentVenue==='guncotton' ? 'Bepoz' : 'Square';
   document.getElementById('bpzHoursTitle').textContent = 'Hourly sales today · from '+posLabel;
-  document.getElementById('dailyTitle').textContent = 'Daily sales this period · from '+posLabel;
+  const granularity = (period==='month'||period==='lastmonth') ? 'Weekly' : (period==='fy'||period==='lastfy') ? 'Monthly' : 'Daily';
+  document.getElementById('dailyTitle').textContent = granularity+' sales this period · from '+posLabel;
   // The hourly panel is only for the Today view; other periods get the daily breakdown instead.
   const hourlySection = document.getElementById('bpzHoursSection');
   hourlySection.style.display = (period==='today') ? 'block' : 'none';
   if(period==='today') fetchPosHours(myGen, silent);
-  fetchDailySales(r, myGen, silent);
+  fetchDailySales(r, myGen, silent, period);
   fetchCompareChart(myGen, silent, period, r, pr);
 }
 
@@ -254,7 +255,7 @@ async function fetchPosHours(myGen, silent){
   }catch(e){ if(myGen===fetchGen) el.innerHTML = '<span style="color:var(--muted)">Not available</span>'; }
 }
 
-async function fetchDailySales(r, myGen, silent){
+async function fetchDailySales(r, myGen, silent, period){
   const el = document.getElementById('dailySales');
   if(!silent) el.innerHTML = '<span style="color:var(--muted)">Loading…</span>';
   try{
@@ -265,17 +266,45 @@ async function fetchDailySales(r, myGen, silent){
     if(myGen !== fetchGen) return;
     if(!data.days || !data.days.length){ el.innerHTML = '<span style="color:var(--muted)">No sales recorded for this period</span>'; return; }
     const narrow = window.innerWidth < 600;
-    el.innerHTML = data.days.map(d=>{
-      const dt = new Date(d.date+'T00:00:00');
-      const dayName = dt.toLocaleDateString('en-AU', {weekday: narrow ? 'short' : 'long'});
-      const dateText = dt.toLocaleDateString('en-AU', narrow ? {day:'numeric',month:'short'} : {day:'numeric',month:'short',year:'numeric'});
-      return '<div class="drow">'+
-        '<span>'+dayName+'</span>'+
-        '<span>'+dateText+'</span>'+
-        '<span>'+d.count+' txns</span>'+
-        '<span>$'+d.sales.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})+'</span>'+
-        '</div>';
-    }).join('');
+    const mode = (period==='month'||period==='lastmonth') ? 'week' : (period==='fy'||period==='lastfy') ? 'month' : 'day';
+    const money = (n)=> '$'+n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+    const row = (a,b,count,sales)=> '<div class="drow"><span>'+a+'</span><span>'+b+'</span><span>'+count+' txns</span><span>'+money(sales)+'</span></div>';
+    let rows;
+    if(mode==='day'){
+      rows = data.days.map(d=>{
+        const dt = new Date(d.date+'T00:00:00');
+        const dayName = dt.toLocaleDateString('en-AU', {weekday: narrow ? 'short' : 'long'});
+        const dateText = dt.toLocaleDateString('en-AU', narrow ? {day:'numeric',month:'short'} : {day:'numeric',month:'short',year:'numeric'});
+        return row(dayName, dateText, d.count, d.sales);
+      });
+    } else {
+      // Group days into Monday-to-Sunday weeks (month views) or calendar months (financial-year views).
+      const groups = [];
+      const byKey = {};
+      data.days.forEach(d=>{
+        const dt = new Date(d.date+'T00:00:00');
+        let key;
+        if(mode==='week'){ const x = new Date(dt); x.setDate(x.getDate() - ((x.getDay()+6)%7)); key = fmtD(x); }
+        else { key = d.date.slice(0,7); }
+        if(!byKey[key]){ byKey[key] = {key, first:d.date, last:d.date, count:0, sales:0}; groups.push(byKey[key]); }
+        const g = byKey[key];
+        if(d.date < g.first) g.first = d.date;
+        if(d.date > g.last) g.last = d.date;
+        g.count += d.count; g.sales += d.sales;
+      });
+      const short = {day:'numeric', month:'short'};
+      rows = groups.map(g=>{
+        if(mode==='week'){
+          const a = new Date(g.first+'T00:00:00').toLocaleDateString('en-AU', short);
+          const b = new Date(g.last+'T00:00:00').toLocaleDateString('en-AU', short);
+          return row(narrow ? 'Wk' : 'Week of', a===b ? a : a+' – '+b, g.count, g.sales);
+        }
+        const dt = new Date(g.key+'-01T00:00:00');
+        return row(dt.toLocaleDateString('en-AU', {month: narrow ? 'short' : 'long'}), dt.getFullYear(), g.count, g.sales);
+      });
+    }
+    const pendingNote = data.pending>0 ? '<div style="margin-top:8px;font-size:12px;color:var(--muted)">Still loading '+data.pending+' earlier day'+(data.pending===1?'':'s')+' — totals fill in shortly.</div>' : '';
+    el.innerHTML = rows.join('') + pendingNote;
   }catch(e){ if(myGen===fetchGen) el.innerHTML = '<span style="color:var(--muted)">Not available</span>'; }
 }
 
