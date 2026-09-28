@@ -370,11 +370,40 @@ async function squareFetchPayments(env, from, to) {
   } while (cursor && iterations < 20);
   return out;
 }
-async function squareCount(env, from, to) {
-  const payments = await squareFetchPayments(env, from, to);
-  const grossCents = payments.reduce((a, p) => a + p.amountCents, 0);
-  // Square's totals are GST-inclusive; every other figure on this dashboard is ex-GST, so back out the standard 10% here too.
-  return { count: payments.length, salesExGst: (grossCents / 100) / 1.1 };
+function listDates(from, to) {
+  const out = [];
+  const d = new Date(from + 'T00:00:00Z'), end = new Date(to + 'T00:00:00Z');
+  for (; d <= end; d.setUTCDate(d.getUTCDate() + 1)) out.push(d.toISOString().slice(0, 10));
+  return out;
+}
+// Square only returns 100 payments a page and a Worker can only make so many calls per request, so long
+// periods (a month, a year) used to be cut off at ~2,000 payments. Finished days never change, so each one
+// is fetched once and its totals stored; today is always fetched live. A few uncached days are filled in per
+// request (budget.left), so a long period completes over the next refresh or two (`pending` = days still to load).
+async function squareDailySummary(env, from, to, budget) {
+  budget = budget || { left: 10 };
+  const today = toBrisbane(new Date()).dateStr;
+  const dates = listDates(from, to).filter((d) => d <= today);
+  const cachedVals = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqday:' + d) : null)));
+  const days = [];
+  let pending = 0;
+  for (let i = 0; i < dates.length; i++) {
+    const d = dates[i];
+    let rec = cachedVals[i] ? JSON.parse(cachedVals[i]) : null;
+    if (!rec) {
+      if (d < today && budget.left <= 0) { pending++; continue; }
+      const payments = await squareFetchPayments(env, d, d);
+      rec = { count: payments.length, cents: payments.reduce((a, p) => a + p.amountCents, 0) };
+      if (d < today) { await env.TOKENS.put('sqday:' + d, JSON.stringify(rec)); budget.left--; }
+    }
+    // Square's totals are GST-inclusive; every other figure on this dashboard is ex-GST, so back out the standard 10%.
+    days.push({ date: d, count: rec.count, sales: (rec.cents / 100) / 1.1 });
+  }
+  return { days, pending };
+}
+async function squareCount(env, from, to, budget) {
+  const { days, pending } = await squareDailySummary(env, from, to, budget);
+  return { count: days.reduce((a, d) => a + d.count, 0), salesExGst: days.reduce((a, d) => a + d.sales, 0), pending };
 }
 function bucketPaymentsHourly(payments, targetDateStr) {
   const buckets = {};
@@ -454,7 +483,7 @@ async function accountingStatus(env) {
     return { configured: true, connected: false, error: { code: err.status || 0 } };
   }
 }
-async function slot(env, from, to, trackingIdsList, venue) {
+async function slot(env, from, to, trackingIdsList, venue, budget) {
   const out = { accounting: null, pos: null };
   try { out.accounting = await xeroPLCombined(env, from, to, trackingIdsList); await noteSync(env, 'accounting'); } catch (e) { out.accountingError = String(e && e.message || e); }
   if (venue === 'guncotton') {
@@ -467,7 +496,7 @@ async function slot(env, from, to, trackingIdsList, venue) {
     } catch (e) {}
   } else if (env.POS_API_TOKEN) {
     try {
-      out.pos = await squareCount(env, from, to);
+      out.pos = await squareCount(env, from, to, budget);
       await noteSync(env, 'pos');
       // Doughgirlz's Xero tagging isn't reliable yet, but every one of its transactions is genuinely
       // theirs (Square is Doughgirlz-only) — so use Square's own total as revenue here instead of Xero's.
@@ -608,9 +637,10 @@ async function apiMetrics(env, url) {
 
   const [accStatus, posStatus, rosterStatus] = await Promise.all([accountingStatus(env), squareStatus(env), roublerStatus(env)]);
   const periods = {};
-  periods.cur = await slot(env, c.from, c.to, trackingIdsList, venue);
-  periods.prev = p ? await slot(env, p.from, p.to, trackingIdsList, venue) : null;
-  periods.yoy = y ? await slot(env, y.from, y.to, trackingIdsList, venue) : null;
+  const budget = { left: 10 };
+  periods.cur = await slot(env, c.from, c.to, trackingIdsList, venue, budget);
+  periods.prev = p ? await slot(env, p.from, p.to, trackingIdsList, venue, budget) : null;
+  periods.yoy = y ? await slot(env, y.from, y.to, trackingIdsList, venue, budget) : null;
   return json({
     generatedAt: new Date().toISOString(),
     venue: venue || 'combined',
@@ -775,11 +805,28 @@ export default {
         return json({ from, to, days });
       } else {
         try {
-          const payments = await squareFetchPayments(env, from, to);
-          const days = bucketPaymentsDaily(payments);
-          return json({ from, to, days });
+          const { days, pending } = await squareDailySummary(env, from, to, { left: 10 });
+          return json({ from, to, days, pending });
         } catch (e) { return json({ from, to, days: [], error: String(e && e.message || e) }); }
       }
+    }
+    // Two periods side by side (current vs previous), for the section-specific comparison chart.
+    if (path === '/api/pos-compare') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const venue = url.searchParams.get('venue');
+      const from = url.searchParams.get('from'), to = url.searchParams.get('to');
+      const pfrom = url.searchParams.get('pfrom'), pto = url.searchParams.get('pto');
+      if (!from || !to || !pfrom || !pto) return json({ error: 'bad range' }, 400);
+      try {
+        if (venue === 'guncotton') {
+          const [cur, prev] = await Promise.all([bepozDailyBreakdown(env, from, to), bepozDailyBreakdown(env, pfrom, pto)]);
+          return json({ cur: { days: cur, pending: 0 }, prev: { days: prev, pending: 0 } });
+        }
+        const budget = { left: 10 };
+        const cur = await squareDailySummary(env, from, to, budget);
+        const prev = await squareDailySummary(env, pfrom, pto, budget);
+        return json({ cur, prev });
+      } catch (e) { return json({ error: String(e && e.message || e) }, 200); }
     }
     // One-off, read-only test of the Roubler staging integration — runs the ListEmployees query
     // Roubler's own docs gave us. Its raw output/errors are exactly the "test results" Joyce asked for.
