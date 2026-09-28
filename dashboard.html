@@ -52,6 +52,7 @@
   <div class="tab" data-tab="settings">Settings</div>
 </div>
 <div id="banner"></div>
+<div id="bepozHealthBanner"></div>
 
 <div id="view-dashboard">
   <select id="period" onchange="fetchData()">
@@ -151,6 +152,21 @@ function rangeFor(period){
   return {from:fmt(now),to:fmt(now)};
 }
 
+// The immediately-preceding comparable period, used for the "vs last week/month/year" badges on the cards.
+const PREV_LABELS = {today:'vs last week', week:'vs last week', lastweek:'vs prior week', month:'vs last month (to date)', lastmonth:'vs month before', fy:'vs last year (to date)', lastfy:'vs year before'};
+function prevRangeFor(period){
+  const now = new Date();
+  const fmt = d => d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  const startOfWeek = (d,offsetWeeks=0) => { const x=new Date(d); const day=(x.getDay()+6)%7; x.setDate(x.getDate()-day+offsetWeeks*7); return x; };
+  if(period==='week'){ const s=startOfWeek(now,-1); const e=new Date(s); e.setDate(e.getDate()+6); return {from:fmt(s),to:fmt(e)}; }
+  if(period==='lastweek'){ const s=startOfWeek(now,-2); const e=new Date(s); e.setDate(e.getDate()+6); return {from:fmt(s),to:fmt(e)}; }
+  if(period==='month'){ const s=new Date(now.getFullYear(),now.getMonth()-1,1); const lastDay=new Date(now.getFullYear(),now.getMonth(),0).getDate(); const e=new Date(now.getFullYear(),now.getMonth()-1,Math.min(now.getDate(),lastDay)); return {from:fmt(s),to:fmt(e)}; }
+  if(period==='lastmonth'){ const s=new Date(now.getFullYear(),now.getMonth()-2,1); const e=new Date(now.getFullYear(),now.getMonth()-1,0); return {from:fmt(s),to:fmt(e)}; }
+  if(period==='fy'){ const y=(now.getMonth()>=6?now.getFullYear():now.getFullYear()-1)-1; const d=new Date(now); d.setFullYear(d.getFullYear()-1); return {from:y+'-07-01', to:fmt(d)}; }
+  if(period==='lastfy'){ const y=(now.getMonth()>=6?now.getFullYear():now.getFullYear()-1)-2; return {from:y+'-07-01', to:(y+1)+'-06-30'}; }
+  const d=new Date(now); d.setDate(d.getDate()-7); return {from:fmt(d),to:fmt(d)};
+}
+
 let fetchGen = 0;
 async function fetchData(silent){
   const myGen = ++fetchGen;
@@ -158,21 +174,41 @@ async function fetchData(silent){
   const period = document.getElementById('period').value;
   localStorage.setItem('vd_period', period);
   const r = rangeFor(period);
-  const url = '/api/metrics?cur='+r.from+':'+r.to+'&venue='+currentVenue+'&_='+Date.now();
+  const pr = prevRangeFor(period);
+  const url = '/api/metrics?cur='+r.from+':'+r.to+'&prev='+pr.from+':'+pr.to+'&venue='+currentVenue+'&_='+Date.now();
   const res = await fetch(url, {cache:'no-store'});
   if(myGen !== fetchGen) return; // a newer tab switch/period change has already started a fresher fetch — drop this stale one
   if(res.status===401){ location.reload(); return; }
   const data = await res.json();
+  data.prevLabel = PREV_LABELS[period] || 'vs last period';
   if(myGen !== fetchGen) return;
   renderBanner(data);
   renderCards(data);
   renderConnections(data);
+  if(currentVenue==='guncotton') fetchBepozHealth(myGen); else document.getElementById('bepozHealthBanner').innerHTML = '';
   const posLabel = currentVenue==='guncotton' ? 'Bepoz' : 'Square';
   document.getElementById('bpzHoursTitle').textContent = 'Hourly sales today · from '+posLabel;
   document.getElementById('dailyTitle').textContent = 'Daily sales this period · from '+posLabel;
   fetchPosHours(myGen, silent);
   fetchDailySales(r, myGen, silent);
   fetchCompareChart(myGen, silent);
+}
+
+async function fetchBepozHealth(myGen){
+  try{
+    const res = await fetch('/api/bepoz-health', {cache:'no-store'});
+    if(myGen !== fetchGen || !res.ok) return;
+    const data = await res.json();
+    if(myGen !== fetchGen) return;
+    const el = document.getElementById('bepozHealthBanner');
+    if(data.warning){
+      const mins = data.minutesSinceLast;
+      const since = mins==null ? 'No Bepoz report has ever been received' : 'No Bepoz report received in the last '+mins+' minutes';
+      el.innerHTML = '<div class="banner" style="background:#78350f">⚠️ '+since+' — worth checking the till/email is still sending reports.</div>';
+    } else {
+      el.innerHTML = '';
+    }
+  }catch(e){}
 }
 
 // Quietly refresh in the background so new sales show up without the user needing to reload —
@@ -291,6 +327,7 @@ function renderBanner(data){
 
 function renderCards(data){
   const cur = data.periods.cur || {};
+  const prev = data.periods.prev || {};
   const acc = cur.accounting, pos = cur.pos;
   const revenue = acc ? acc.revenue : null;
   const count = pos ? pos.count : null;
@@ -299,6 +336,26 @@ function renderCards(data){
   const wagepct = (acc && revenue) ? (acc.wagesSuper/revenue) : null;
   const overheads = acc ? acc.overheads : null;
   const profit = acc ? (revenue - acc.cogs - acc.wagesSuper - acc.overheads) : null;
+
+  // Same figures for the previous comparable period, so Revenue/Profit/Wage % can show a "vs last week" badge.
+  const pAcc = prev.accounting;
+  const pRevenue = pAcc ? pAcc.revenue : null;
+  const pWagepct = (pAcc && pRevenue) ? (pAcc.wagesSuper/pRevenue) : null;
+  const pProfit = pAcc ? (pRevenue - pAcc.cogs - pAcc.wagesSuper - pAcc.overheads) : null;
+
+  function deltaBadge(curVal, prevVal, invert){
+    if(curVal==null || prevVal==null || prevVal===0) return '';
+    const pct = (curVal - prevVal) / Math.abs(prevVal) * 100;
+    const goingUp = pct >= 0;
+    const favorable = invert ? !goingUp : goingUp;
+    const color = favorable ? 'var(--good)' : 'var(--bad)';
+    const arrow = goingUp ? '▲' : '▼';
+    return '<span style="font-size:12px;font-weight:600;color:'+color+';margin-left:8px">'+arrow+' '+Math.abs(pct).toFixed(1)+'%</span>';
+  }
+  const revenueBadge = deltaBadge(revenue, pRevenue, false);
+  const profitBadge = deltaBadge(profit, pProfit, false);
+  const wagepctBadge = deltaBadge(wagepct, pWagepct, true);
+  const prevLabel = data.prevLabel || 'vs last period';
 
   const vals = {
     revenue: revenue==null?null:fmtMoney(revenue),
@@ -309,6 +366,7 @@ function renderCards(data){
     overheads: overheads==null?null:fmtMoney(overheads),
     profit: profit==null?null:fmtMoney(profit)
   };
+  const badges = { revenue: revenueBadge, profit: profitBadge, wagepct: wagepctBadge };
   const wageTarget = parseFloat((localStorage.getItem('vd_wagetarget')||'').replace(/[^0-9.]/g,''));
   const cogsTarget = parseFloat((localStorage.getItem('vd_cogstarget')||'').replace(/[^0-9.]/g,''));
   const profitTarget = parseFloat((localStorage.getItem('vd_profittarget')||'').replace(/[^0-9.]/g,''));
@@ -319,13 +377,32 @@ function renderCards(data){
   else if (!isNaN(profitTarget) && profitPct != null && profitPct < profitTarget) cls.profit = 'warn';
   if (!isNaN(wageTarget) && wagepct != null && wagepct !== '—' && (wagepct*100) > wageTarget) cls.wagepct = 'warn';
   if (!isNaN(cogsTarget) && cogsPct != null && cogsPct > cogsTarget) cls.cogs = 'warn';
+
+  // A small "vs target" line under Wage %, Cost of goods, and Profit — makes the Settings targets actually actionable.
+  const targetLines = {};
+  if (!isNaN(wageTarget) && wagepct != null && wagepct !== '—') {
+    const diff = (wagepct*100) - wageTarget;
+    targetLines.wagepct = 'Target: '+wageTarget+'% • '+(diff<=0?'':'+'+diff.toFixed(1)+'pts over');
+    if(diff<=0) targetLines.wagepct = 'Target: '+wageTarget+'% • '+Math.abs(diff).toFixed(1)+'pts under (good)';
+  }
+  if (!isNaN(cogsTarget) && cogsPct != null) {
+    const diff = cogsPct - cogsTarget;
+    targetLines.cogs = diff<=0 ? 'Target: '+cogsTarget+'% of revenue • '+Math.abs(diff).toFixed(1)+'pts under (good)' : 'Target: '+cogsTarget+'% of revenue • +'+diff.toFixed(1)+'pts over';
+  }
+  if (!isNaN(profitTarget) && profitPct != null) {
+    const diff = profitPct - profitTarget;
+    targetLines.profit = diff>=0 ? 'Target: '+profitTarget+'% margin • +'+diff.toFixed(1)+'pts over (good)' : 'Target: '+profitTarget+'% margin • '+Math.abs(diff).toFixed(1)+'pts under';
+  }
+
   const cardsEl = document.getElementById('cards');
   cardsEl.innerHTML = METRICS.map(m=>{
     const v = vals[m.key];
     const cssClass = cls[m.key] ? ' ' + cls[m.key] : '';
+    const badge = badges[m.key] ? badges[m.key] + '<span style="font-size:11px;color:var(--muted);margin-left:4px">'+prevLabel+'</span>' : '';
+    const targetLine = targetLines[m.key] ? '<div class="desc" style="margin-top:4px">'+targetLines[m.key]+'</div>' : '';
     return '<div class="mcard"><div class="label">'+m.label+'</div>'+
-      (v==null ? '<div class="value notconfigured">Not configured</div>' : '<div class="value'+cssClass+'">'+v+'</div>')+
-      '<div class="desc">'+m.desc+'</div></div>';
+      (v==null ? '<div class="value notconfigured">Not configured</div>' : '<div class="value'+cssClass+'">'+v+badge+'</div>')+
+      '<div class="desc">'+m.desc+'</div>'+targetLine+'</div>';
   }).join('');
 }
 
