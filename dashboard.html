@@ -194,7 +194,10 @@ async function fetchData(silent){
   const posLabel = currentVenue==='guncotton' ? 'Bepoz' : 'Square';
   document.getElementById('bpzHoursTitle').textContent = 'Hourly sales today · from '+posLabel;
   document.getElementById('dailyTitle').textContent = 'Daily sales this period · from '+posLabel;
-  fetchPosHours(myGen, silent);
+  // The hourly panel is only for the Today view; other periods get the daily breakdown instead.
+  const hourlySection = document.getElementById('bpzHoursSection');
+  hourlySection.style.display = (period==='today') ? 'block' : 'none';
+  if(period==='today') fetchPosHours(myGen, silent);
   fetchDailySales(r, myGen, silent);
   fetchCompareChart(myGen, silent);
 }
