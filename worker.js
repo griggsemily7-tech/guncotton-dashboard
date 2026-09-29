@@ -428,6 +428,95 @@ function bucketPaymentsDaily(payments) {
   }
   return Object.keys(buckets).sort().map((d) => ({ date: d, count: buckets[d].count, sales: (buckets[d].cents / 100) / 1.1 }));
 }
+/* ---------------- Square item / category breakdown ---------------- */
+async function squareApi(env, path, method, body) {
+  const res = await fetch('https://connect.squareup.com' + path, {
+    method: method || 'GET',
+    headers: { Authorization: 'Bearer ' + env.POS_API_TOKEN, 'Square-Version': '2025-01-23', 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = data.errors && data.errors[0] ? (data.errors[0].detail || data.errors[0].code) : '';
+    const e = new Error('Square ' + path + ' failed (' + res.status + ')' + (detail ? ': ' + detail : ''));
+    e.status = res.status; throw e;
+  }
+  return data;
+}
+async function squareLocationIds(env) {
+  return cached(env, 'status-cache:sqlocs', 3600, async () => {
+    const data = await squareApi(env, '/v2/locations');
+    return (data.locations || []).filter((l) => l.status === 'ACTIVE').map((l) => l.id);
+  });
+}
+const squareCatIdOf = (item) => {
+  const d = item && item.item_data; if (!d) return null;
+  return (d.reporting_category && d.reporting_category.id) || (d.categories && d.categories[0] && d.categories[0].id) || d.category_id || null;
+};
+// Maps item-variation ids to { category, item }, remembering answers in KV so the catalog is only asked once per product.
+async function squareCategoriesFor(env, variationIds) {
+  const out = {}, missing = [];
+  const hits = await Promise.all(variationIds.map((id) => env.TOKENS.get('sqcat:' + id)));
+  variationIds.forEach((id, i) => { if (hits[i]) out[id] = JSON.parse(hits[i]); else missing.push(id); });
+  if (!missing.length) return out;
+  const data = await squareApi(env, '/v2/catalog/batch-retrieve', 'POST', { object_ids: missing, include_related_objects: true });
+  const byId = {};
+  (data.related_objects || []).forEach((o) => { byId[o.id] = o; });
+  (data.objects || []).forEach((o) => { byId[o.id] = o; });
+  const itemOf = (vid) => { const v = byId[vid]; return v && v.item_variation_data ? byId[v.item_variation_data.item_id] : null; };
+  const needCats = new Set();
+  missing.forEach((vid) => { const cid = squareCatIdOf(itemOf(vid)); if (cid && !byId[cid]) needCats.add(cid); });
+  if (needCats.size) {
+    const c = await squareApi(env, '/v2/catalog/batch-retrieve', 'POST', { object_ids: [...needCats] });
+    (c.objects || []).forEach((o) => { byId[o.id] = o; });
+  }
+  await Promise.all(missing.map((vid) => {
+    const item = itemOf(vid), cid = squareCatIdOf(item), cat = cid && byId[cid];
+    const rec = { category: cat && cat.category_data ? cat.category_data.name : 'Uncategorised', item: item && item.item_data ? item.item_data.name : null };
+    out[vid] = rec;
+    return env.TOKENS.put('sqcat:' + vid, JSON.stringify(rec), { expirationTtl: 86400 * 7 });
+  }));
+  return out;
+}
+// What sold in a day (or one hour of it), grouped by Square category — numbers are Square's own net item figures (after discounts, before tax).
+async function squareBreakdown(env, date, hour) {
+  const pad = (n) => String(n).padStart(2, '0');
+  const startIso = date + 'T' + (hour == null ? '00:00:00' : pad(hour) + ':00:00') + '+10:00';
+  const endIso = date + 'T' + (hour == null ? '23:59:59' : pad(hour) + ':59:59') + '+10:00';
+  const locationIds = await squareLocationIds(env);
+  const orders = [];
+  let cursor = null, pages = 0;
+  do {
+    const body = { location_ids: locationIds, limit: 500, query: { filter: { state_filter: { states: ['COMPLETED'] }, date_time_filter: { closed_at: { start_at: startIso, end_at: endIso } } }, sort: { sort_field: 'CLOSED_AT', sort_order: 'ASC' } } };
+    if (cursor) body.cursor = cursor;
+    const data = await squareApi(env, '/v2/orders/search', 'POST', body);
+    orders.push(...(data.orders || []));
+    cursor = data.cursor; pages++;
+  } while (cursor && pages < 10);
+  const lines = [];
+  orders.forEach((o) => (o.line_items || []).forEach((li) => lines.push(li)));
+  const variationIds = [...new Set(lines.map((li) => li.catalog_object_id).filter(Boolean))];
+  const catMap = variationIds.length ? await squareCategoriesFor(env, variationIds) : {};
+  const cats = {};
+  let totalQty = 0, totalCents = 0;
+  for (const li of lines) {
+    const qty = parseFloat(li.quantity) || 0;
+    const cents = ((li.total_money && li.total_money.amount) || 0) - ((li.total_tax_money && li.total_tax_money.amount) || 0);
+    const meta = li.catalog_object_id ? catMap[li.catalog_object_id] : null;
+    const catName = meta ? meta.category : 'Uncategorised';
+    const itemName = li.name || (meta && meta.item) || 'Item';
+    const c = cats[catName] || (cats[catName] = { name: catName, qty: 0, net: 0, items: {} });
+    c.qty += qty; c.net += cents / 100;
+    const it = c.items[itemName] || (c.items[itemName] = { name: itemName, qty: 0, net: 0 });
+    it.qty += qty; it.net += cents / 100;
+    totalQty += qty; totalCents += cents;
+  }
+  const categories = Object.values(cats)
+    .map((c) => ({ name: c.name, qty: c.qty, net: c.net, items: Object.values(c.items).sort((a, b) => b.qty - a.qty) }))
+    .sort((a, b) => b.net - a.net);
+  return { date, hour: hour == null ? null : hour, orders: orders.length, totalQty, totalNet: totalCents / 100, categories };
+}
+
 async function squareStatus(env) {
   return cached(env, 'status-cache:square', 60, async () => {
     if (!env.POS_API_TOKEN) return { connected: false };
@@ -808,6 +897,21 @@ export default {
           const { days, pending } = await squareDailySummary(env, from, to, { left: 10 });
           return json({ from, to, days, pending });
         } catch (e) { return json({ from, to, days: [], error: String(e && e.message || e) }); }
+      }
+    }
+    // Click-through detail: what sold (by category, then item) in a day or an hour. Square only — Bepoz's
+    // hourly email has no item detail.
+    if (path === '/api/square-breakdown') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const date = url.searchParams.get('date');
+      const hourParam = url.searchParams.get('hour');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) return json({ error: 'bad date' }, 400);
+      const hour = hourParam == null || hourParam === '' ? null : parseInt(hourParam, 10);
+      try {
+        return json(await squareBreakdown(env, date, hour));
+      } catch (e) {
+        const denied = e && (e.status === 401 || e.status === 403);
+        return json({ error: denied ? 'Square wouldn\'t share item details. The Square access token needs "Orders (read)" and "Items (read)" permission.' : String(e && e.message || e) });
       }
     }
     // Two periods side by side (current vs previous), for the section-specific comparison chart.
