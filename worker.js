@@ -505,16 +505,41 @@ async function squareBreakdown(env, date, hour) {
     const meta = li.catalog_object_id ? catMap[li.catalog_object_id] : null;
     const catName = meta ? meta.category : 'Uncategorised';
     const itemName = li.name || (meta && meta.item) || 'Item';
-    const c = cats[catName] || (cats[catName] = { name: catName, qty: 0, net: 0, items: {} });
-    c.qty += qty; c.net += cents / 100;
+    const c = cats[catName] || (cats[catName] = { name: catName, qty: 0, net: 0, gross: 0, items: {} });
+    c.qty += qty; c.net += cents / 100; c.gross += ((li.total_money && li.total_money.amount) || 0) / 100;
     const it = c.items[itemName] || (c.items[itemName] = { name: itemName, qty: 0, net: 0 });
     it.qty += qty; it.net += cents / 100;
     totalQty += qty; totalCents += cents;
   }
   const categories = Object.values(cats)
-    .map((c) => ({ name: c.name, qty: c.qty, net: c.net, items: Object.values(c.items).sort((a, b) => b.qty - a.qty) }))
+    .map((c) => ({ name: c.name, qty: c.qty, net: c.net, gross: c.gross, items: Object.values(c.items).sort((a, b) => b.qty - a.qty) }))
     .sort((a, b) => b.net - a.net);
   return { date, hour: hour == null ? null : hour, orders: orders.length, totalQty, totalNet: totalCents / 100, categories };
+}
+
+// Per-day items sold + gross (incl. GST) by Square category — powers the Doughgirlz sales goals panel.
+// Finished days never change, so each is worked out once and stored; today is always live. Only a few
+// uncached days are filled per request (budget.left), so long periods complete over a refresh or two.
+async function squareCategoryDays(env, from, to, budget) {
+  budget = budget || { left: 4 };
+  const today = toBrisbane(new Date()).dateStr;
+  const dates = listDates(from, to).filter((d) => d <= today);
+  const cachedVals = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqgoal:' + d) : null)));
+  const days = [];
+  let pending = 0;
+  for (let i = 0; i < dates.length; i++) {
+    const d = dates[i];
+    let rec = cachedVals[i] ? JSON.parse(cachedVals[i]) : null;
+    if (!rec) {
+      if (d < today && budget.left <= 0) { pending++; continue; }
+      const b = await squareBreakdown(env, d, null);
+      rec = { cats: {} };
+      b.categories.forEach((c) => { rec.cats[c.name] = { qty: c.qty, gross: c.gross }; });
+      if (d < today) { await env.TOKENS.put('sqgoal:' + d, JSON.stringify(rec)); budget.left--; }
+    }
+    days.push({ date: d, cats: rec.cats });
+  }
+  return { days, pending };
 }
 
 async function squareStatus(env) {
@@ -913,6 +938,13 @@ export default {
         const denied = e && (e.status === 401 || e.status === 403);
         return json({ error: denied ? 'Square wouldn\'t share item details. The Square access token needs "Orders (read)" and "Items (read)" permission.' : String(e && e.message || e) });
       }
+    }
+    if (path === '/api/goal-progress') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const from = url.searchParams.get('from'), to = url.searchParams.get('to');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(from || '') || !/^\d{4}-\d{2}-\d{2}$/.test(to || '')) return json({ error: 'bad range' }, 400);
+      try { return json(await squareCategoryDays(env, from, to, { left: 4 })); }
+      catch (e) { return json({ days: [], pending: 0, error: String(e && e.message || e) }); }
     }
     // Two periods side by side (current vs previous), for the section-specific comparison chart.
     if (path === '/api/pos-compare') {
