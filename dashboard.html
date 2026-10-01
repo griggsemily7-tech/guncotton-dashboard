@@ -41,6 +41,15 @@
   .drow span:nth-child(3){text-align:right;color:var(--muted)}
   .drow span:nth-child(4){text-align:right;font-weight:600}
   @media(max-width:600px){.drow{grid-template-columns:42px minmax(0,1fr) 56px 82px;font-size:13px}}
+  .grow{display:grid;grid-template-columns:minmax(0,1fr) 110px 150px;align-items:baseline;padding:8px 0 2px;font-variant-numeric:tabular-nums}
+  .grow span:nth-child(2),.grow span:nth-child(3){text-align:right}
+  .grow span:nth-child(3){font-weight:600}
+  .grow.total{border-top:1px solid rgba(255,255,255,.12);margin-top:6px;padding-top:10px;font-weight:700}
+  .gbar{height:6px;border-radius:3px;background:rgba(255,255,255,.08);overflow:hidden;margin-bottom:6px}
+  .gbar>div{height:100%;border-radius:3px}
+  .glegend{font-size:12px;color:var(--muted);margin-top:10px}
+  .glegend b{font-weight:600}
+  @media(max-width:600px){.grow{grid-template-columns:minmax(0,1fr) 72px 104px;font-size:13px}}
   .drill{cursor:pointer;border-radius:6px}
   .drill:hover{background:rgba(255,255,255,.04)}
   .drill.open{background:rgba(59,130,246,.10)}
@@ -89,6 +98,10 @@
     <option value="lastfy">Last financial year</option>
   </select>
   <div class="cards" id="cards"></div>
+  <div id="goalsSection" style="margin-top:20px;display:none">
+    <div id="goalsTitle" style="font-size:12px;color:var(--muted);letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px">Sales goals</div>
+    <div id="goals" style="background:var(--card);border-radius:12px;padding:16px"></div>
+  </div>
   <div id="bpzHoursSection" style="margin-top:20px">
     <div id="bpzHoursTitle" style="font-size:12px;color:var(--muted);letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px">Hourly sales today · from Bepoz</div>
     <div id="bpzHours" style="background:var(--card);border-radius:12px;padding:16px"></div>
@@ -219,6 +232,7 @@ async function fetchData(silent){
   hourlySection.style.display = (period==='today') ? 'block' : 'none';
   if(period==='today') fetchPosHours(myGen, silent);
   fetchDailySales(r, myGen, silent, period);
+  fetchGoals(r, myGen, silent, period);
   fetchCompareChart(myGen, silent, period, r, pr);
 }
 
@@ -303,6 +317,105 @@ document.addEventListener('click', (e)=>{
 // Till figures are shown incl. GST (what the till took). Revenue stays ex-GST underneath so
 // COGS %, wage %, profit $ and profit % still compare like-for-like with Xero's ex-GST costs.
 const GST = 1.1;
+
+// ---- Doughgirlz sales goals (from the Weekly Gross Sales Tracker) ----
+// Items-sold goals per category per weekday, and the set average price per item (incl. GST).
+// Gross goal = items × price. To change a goal, edit the numbers here.
+const DG_GOALS = {
+  prices: { 'Retail Coffee': 40, 'Hot Coffee': 6.5, 'Breakfast': 22, 'Cookies': 8, 'Cold drinks': 8, 'Donuts': 4.5 },
+  //                   Mon  Tue  Wed  Thu  Fri  Sat  Sun
+  items: {
+    'Retail Coffee': [  25,  25,  25,  25,  25,  50,  50],
+    'Hot Coffee':    [ 100,  90,  90,  90, 100, 250, 250],
+    'Breakfast':     [  35,  30,  30,  30,  35,  75,  75],
+    'Cookies':       [  35,  30,  30,  30,  35,  75,  75],
+    'Cold drinks':   [  40,  30,  30,  30,  40,  50,  50],
+    'Donuts':        [   0,   0,   0,   0,   0, 200, 200]
+  }
+};
+const goalNorm = (s)=> String(s).toLowerCase().replace(/[^a-z]/g,'').replace(/s$/,'');
+const GOAL_BY_NORM = {}; Object.keys(DG_GOALS.items).forEach(k=>{ GOAL_BY_NORM[goalNorm(k)] = k; });
+const weekdayIdx = (dateStr)=> (new Date(dateStr+'T00:00:00').getDay()+6)%7; // Mon=0 … Sun=6
+// Green = on or above goal, amber = 80–99% ("almost there"), red = under 80%.
+function goalColour(ratio){ if(ratio==null) return 'var(--muted)'; return ratio>=1 ? 'var(--good)' : ratio>=0.8 ? 'var(--warn)' : 'var(--bad)'; }
+
+// How far through today's trading we are, using last week's same day as the shape of the day
+// (share of its sales done by this time). Falls back to an even 6am–3pm spread if there's no data.
+async function todayPace(){
+  const now = new Date();
+  const hrNow = now.getHours() + now.getMinutes()/60;
+  try{
+    const lw = new Date(now); lw.setDate(lw.getDate()-7);
+    const res = await fetch('/api/pos-hours?venue=doughgirlz&date='+fmtD(lw), {cache:'no-store'});
+    const data = await res.json();
+    let total = 0, done = 0;
+    (data.hours||[]).forEach(h=>{
+      const hr = parseInt(h.hourLabel.split(':')[0],10);
+      total += h.nett;
+      if(hr+1 <= hrNow) done += h.nett; else if(hr < hrNow) done += h.nett*(hrNow-hr);
+    });
+    if(total > 0) return Math.min(1, done/total);
+  }catch(e){}
+  return Math.max(0, Math.min(1, (hrNow-6)/9));
+}
+
+async function fetchGoals(r, myGen, silent, period){
+  const sec = document.getElementById('goalsSection'), el = document.getElementById('goals');
+  if(currentVenue!=='doughgirlz' || period==='fy' || period==='lastfy'){ sec.style.display='none'; return; }
+  sec.style.display = 'block';
+  if(!silent) el.innerHTML = '<span style="color:var(--muted)">Loading…</span>';
+  try{
+    const todayStr = fmtD(new Date());
+    const [res, pace] = await Promise.all([
+      fetch('/api/goal-progress?from='+r.from+'&to='+r.to, {cache:'no-store'}),
+      (r.from<=todayStr && r.to>=todayStr) ? todayPace() : Promise.resolve(1)
+    ]);
+    if(myGen !== fetchGen) return;
+    const data = await res.json();
+    if(myGen !== fetchGen) return;
+    if(data.error){ el.innerHTML = '<span style="color:var(--muted)">Not available — '+escHtml(data.error)+'</span>'; return; }
+    const actualByDate = {}; (data.days||[]).forEach(d=>{ actualByDate[d.date] = d.cats || {}; });
+
+    const rows = {}; Object.keys(DG_GOALS.items).forEach(k=>{ rows[k] = {qty:0, gross:0, goalQty:0, dueQty:0}; });
+    let totalGross = 0, goalGross = 0, dueGross = 0;
+    const other = {};
+    for(let d = r.from; d <= r.to; d = addDays(d,1)){
+      const w = weekdayIdx(d);
+      const share = d < todayStr ? 1 : d === todayStr ? pace : 0; // how much of this day's goal should be done by now
+      Object.keys(DG_GOALS.items).forEach(k=>{
+        const g = DG_GOALS.items[k][w];
+        rows[k].goalQty += g; rows[k].dueQty += g*share;
+        goalGross += g*DG_GOALS.prices[k]; dueGross += g*DG_GOALS.prices[k]*share;
+      });
+      Object.entries(actualByDate[d] || {}).forEach(([name, v])=>{
+        totalGross += v.gross || 0;
+        const key = GOAL_BY_NORM[goalNorm(name)];
+        if(key){ rows[key].qty += v.qty || 0; rows[key].gross += v.gross || 0; }
+        else other[name] = (other[name]||0) + (v.gross||0);
+      });
+    }
+    const money = (n)=> '$'+Math.round(n).toLocaleString();
+    const qty = (n)=> Math.round(n).toLocaleString();
+    const bar = (actual, full, ratio)=> '<div class="gbar"><div style="width:'+(full>0?Math.min(100, actual/full*100):0).toFixed(1)+'%;background:'+goalColour(ratio)+'"></div></div>';
+    const inProgress = r.to >= todayStr;
+    let html = '';
+    Object.keys(DG_GOALS.items).forEach(k=>{
+      const x = rows[k];
+      if(x.goalQty===0 && x.qty===0) return; // e.g. donuts on a weekday
+      const ratio = x.dueQty > 0 ? x.qty/x.dueQty : (x.qty>0 ? 1 : null);
+      html += '<div class="grow"><span>'+escHtml(k)+'</span><span style="color:'+goalColour(ratio)+'">'+qty(x.qty)+' / '+qty(x.goalQty)+'</span><span>'+money(x.gross)+' <span style="color:var(--muted);font-weight:400">/ '+money(x.goalQty*DG_GOALS.prices[k])+'</span></span></div>'+bar(x.qty, x.goalQty, ratio);
+    });
+    const tRatio = dueGross > 0 ? totalGross/dueGross : null;
+    html += '<div class="grow total"><span>Total gross sales</span><span style="color:'+goalColour(tRatio)+'">'+(tRatio==null?'—':Math.round(tRatio*100)+'%')+'</span><span>'+money(totalGross)+' <span style="color:var(--muted);font-weight:400">/ '+money(goalGross)+'</span></span></div>'+bar(totalGross, goalGross, tRatio);
+    const otherNames = Object.keys(other);
+    let notes = '<div class="glegend">Items sold / goal for the period · gross incl. GST. ';
+    notes += inProgress ? 'Colours compare against where you should be <b>by now</b>: ' : 'Colours: ';
+    notes += '<b style="color:var(--good)">on goal</b>, <b style="color:var(--warn)">80–99%</b>, <b style="color:var(--bad)">under 80%</b>.</div>';
+    if(otherNames.length) notes += '<div class="glegend">Also sold (no goal set, counted in the total): '+otherNames.map(n=>escHtml(n)+' '+money(other[n])).join(' · ')+'</div>';
+    if(data.pending>0) notes += '<div class="glegend">Still loading '+data.pending+' earlier day'+(data.pending===1?'':'s')+' — figures fill in shortly.</div>';
+    el.innerHTML = html + notes;
+  }catch(e){ if(myGen===fetchGen) el.innerHTML = '<span style="color:var(--muted)">Not available</span>'; }
+}
 
 async function fetchPosHours(myGen, silent){
   const el = document.getElementById('bpzHours');
