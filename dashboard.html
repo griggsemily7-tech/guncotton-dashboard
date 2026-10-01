@@ -64,7 +64,7 @@
 </head>
 <body>
 <h1 id="venueName">Your venue</h1>
-<div class="sub">Your numbers · ex-GST</div>
+<div class="sub">Revenue &amp; sales incl. GST · costs, profit &amp; % ex-GST</div>
 <div class="tabs" style="margin-bottom:6px">
   <div class="venue-btn active" data-venue="guncotton">Gun Cotton (Cafe)</div>
   <div class="venue-btn" data-venue="doughgirlz">Doughgirlz Bakehouse</div>
@@ -139,7 +139,7 @@
 <script>
 const METRICS_BY_VENUE = {
   guncotton: [
-    {key:'revenue', label:'Revenue', src:'Bepoz', primary:true},
+    {key:'revenue', label:'Revenue (incl. GST)', src:'Bepoz', primary:true},
     {key:'count', label:'Transactions', src:'Bepoz', primary:true},
     {key:'acs', label:'Avg spend', src:'', primary:true},
     {key:'cogs', label:'Cost of goods', src:'Xero'},
@@ -148,7 +148,7 @@ const METRICS_BY_VENUE = {
     {key:'profit', label:'Profit', src:'Xero'}
   ],
   doughgirlz: [
-    {key:'revenue', label:'Revenue', src:'Square', primary:true},
+    {key:'revenue', label:'Revenue (incl. GST)', src:'Square', primary:true},
     {key:'count', label:'Transactions', src:'Square', primary:true},
     {key:'acs', label:'Avg spend', src:'', primary:true},
     {key:'cogs', label:'Cost of goods', src:'Xero'},
@@ -300,6 +300,10 @@ document.addEventListener('click', (e)=>{
   else { openDrills.add(key); box.style.display='block'; row.classList.add('open'); chev.textContent='▾'; loadDrill(row); }
 });
 
+// Till figures are shown incl. GST (what the till took). Revenue stays ex-GST underneath so
+// COGS %, wage %, profit $ and profit % still compare like-for-like with Xero's ex-GST costs.
+const GST = 1.1;
+
 async function fetchPosHours(myGen, silent){
   const el = document.getElementById('bpzHours');
   if(!silent) el.innerHTML = '<span style="color:var(--muted)">Loading…</span>';
@@ -316,7 +320,7 @@ async function fetchPosHours(myGen, silent){
     setPanel(el, data.hours.map(h=>{
       const hr = parseInt(h.hourLabel.split(':')[0],10);
       const attrs = canDrill ? ' drill" data-date="'+dateStr+'" data-hour="'+hr : '';
-      const amt = '$'+h.nett.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+      const amt = '$'+(h.nett*GST).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
       return '<div class="prow'+attrs+'">'+
         '<span>'+(canDrill?'<span class="chev">▸</span>':'')+h.hourLabel+'</span>'+
         '<span>'+h.count+' txns</span><span>'+amt+'</span></div>'+
@@ -341,7 +345,7 @@ async function fetchDailySales(r, myGen, silent, period){
     const canDrill = currentVenue==='doughgirlz' && mode==='day';
     const row = (a,b,count,sales,date)=> {
       const attrs = (canDrill && date) ? ' drill" data-date="'+date : '';
-      return '<div class="drow'+attrs+'"><span>'+(attrs?'<span class="chev">▸</span>':'')+a+'</span><span>'+b+'</span><span>'+count+' txns</span><span>'+money(sales)+'</span></div>'+
+      return '<div class="drow'+attrs+'"><span>'+(attrs?'<span class="chev">▸</span>':'')+a+'</span><span>'+b+'</span><span>'+count+' txns</span><span>'+money(sales*GST)+'</span></div>'+
         (attrs ? '<div class="detail" style="display:none"></div>' : '');
     };
     let rows;
@@ -412,8 +416,8 @@ async function fetchCompareChart(myGen, silent, period, r, pr){
     if(myGen !== fetchGen) return;
     if(data.error){ el.innerHTML = '<span style="color:var(--muted)">Not available</span>'; return; }
     const curMap = {}, prevMap = {};
-    (data.cur.days||[]).forEach(d=>{ curMap[d.date] = d.sales; });
-    (data.prev.days||[]).forEach(d=>{ prevMap[d.date] = d.sales; });
+    (data.cur.days||[]).forEach(d=>{ curMap[d.date] = d.sales*GST; });
+    (data.prev.days||[]).forEach(d=>{ prevMap[d.date] = d.sales*GST; });
     const todayStr = fmtD(new Date());
     const n = Math.max(daysBetween(r.from, r.to), daysBetween(pr.from, pr.to));
     let svg;
@@ -458,7 +462,7 @@ async function todayCompareChart(myGen, el){
   }
   const cumulative = (hours) => {
     const byHour = {};
-    (hours||[]).forEach(h=>{ byHour[parseInt(h.hourLabel.split(':')[0],10)] = h.nett; });
+    (hours||[]).forEach(h=>{ byHour[parseInt(h.hourLabel.split(':')[0],10)] = h.nett*GST; });
     let running = 0; const out = [];
     for(let hr=0; hr<24; hr++){ if(byHour[hr]!=null){ running += byHour[hr]; out.push({x:hr, value:running}); } }
     return out;
@@ -530,7 +534,7 @@ function renderCards(data){
   const acc = cur.accounting, pos = cur.pos;
   const revenue = acc ? acc.revenue : null;
   const count = pos ? pos.count : null;
-  const acs = (revenue!=null && count!=null) ? (count===0 ? '—' : (revenue/count)) : null;
+  const acs = (revenue!=null && count!=null) ? (count===0 ? '—' : (revenue*GST/count)) : null;
   const cogs = acc ? acc.cogs : null;
   const wagepct = (acc && revenue) ? (acc.wagesSuper/revenue) : null;
   const overheads = acc ? acc.overheads : null;
@@ -561,7 +565,7 @@ function renderCards(data){
   const wagepctBadge = (noPrior || prevLoading) ? '' : deltaBadge(wagepct, pWagepct, true);
 
   const vals = {
-    revenue: revenue==null?null:fmtMoney(revenue),
+    revenue: revenue==null?null:fmtMoney(revenue*GST),
     count: count==null?null:count.toLocaleString(),
     acs: acs===null?null:(acs==='—'?'—':fmtMoney(acs)),
     cogs: cogs==null?null:fmtMoney(cogs),
