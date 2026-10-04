@@ -337,7 +337,8 @@ async function bepozDailyBreakdown(env, from, to) {
       if (!raw) continue;
       const rec = JSON.parse(raw);
       if (typeof rec.count === 'number') count += rec.count;
-      if (typeof rec.nett === 'number') sales += rec.nett;
+      // Bepoz's nett already includes GST; Revenue is kept ex-GST everywhere (the dashboard adds GST back for display).
+      if (typeof rec.nett === 'number') sales += rec.nett / 1.1;
     }
     return { date: dateStr, count, sales };
   }));
@@ -854,7 +855,7 @@ export default {
         // Keep the original file too (safe, lossless — base64 of the real bytes), so we can always re-parse later if needed.
         record.attachmentB64 = b64encode(attachment.bytes);
 
-        // Bepoz's summary sheet (sheet1) has the raw numbers on row 3: A3 = nett sales, B3 = transaction count.
+        // Bepoz's summary sheet (sheet1) has the raw numbers on row 3: A3 = nett sales (incl. GST), B3 = transaction count.
         const sheet1 = sheets['xl/worksheets/sheet1.xml'];
         const nett = sheet1 && sheet1.A3 != null ? parseFloat(sheet1.A3) : null;
         const count = sheet1 && sheet1.B3 != null ? parseInt(sheet1.B3, 10) : null;
@@ -897,7 +898,7 @@ export default {
       if (venue === 'guncotton') {
         const list = await env.TOKENS.list({ prefix: 'bpzhour:' + date + ':' });
         const hours = [];
-        for (const k of list.keys) { const raw = await env.TOKENS.get(k.name); if (raw) hours.push(JSON.parse(raw)); }
+        for (const k of list.keys) { const raw = await env.TOKENS.get(k.name); if (raw) { const h = JSON.parse(raw); if (typeof h.nett === 'number') h.nett = h.nett / 1.1; hours.push(h); } }
         hours.sort((a, b) => a.hourLabel.localeCompare(b.hourLabel, undefined, { numeric: true }));
         return json({ date, hours });
       } else {
