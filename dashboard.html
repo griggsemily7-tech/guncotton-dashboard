@@ -219,6 +219,12 @@ async function fetchData(silent){
   if(res.status===401){ location.reload(); return; }
   const data = await res.json();
   data.prevLabel = PREV_LABELS[period] || 'vs last period';
+  if(period==='today'){
+    // Today is only part-way through, so compare it with last week's same day up to the same time.
+    const sameTime = await prevRevenueSameTime(r.from, pr.from);
+    if(myGen !== fetchGen) return;
+    if(sameTime) { data.prevSameTime = sameTime.revenue; data.prevLabel = 'vs same time last '+sameTime.dayName; }
+  }
   if(myGen !== fetchGen) return;
   renderBanner(data);
   renderCards(data);
@@ -416,6 +422,32 @@ async function fetchGoals(r, myGen, silent, period){
     if(data.pending>0) notes += '<div class="glegend">Still loading '+data.pending+' earlier day'+(data.pending===1?'':'s')+' — figures fill in shortly.</div>';
     el.innerHTML = html + notes;
   }catch(e){ if(myGen===fetchGen) el.innerHTML = '<span style="color:var(--muted)">Not available</span>'; }
+}
+
+// Last week's same-day revenue (ex-GST, like the Revenue figure) up to the same point in the day as today.
+// Square is live, so it's cut at the current minute (the current hour counted pro-rata). Bepoz arrives as
+// hourly emails, so it's cut at the end of the latest hour Bepoz has reported for today.
+async function prevRevenueSameTime(todayStr, prevStr){
+  try{
+    const get = (d)=> fetch('/api/pos-hours?venue='+currentVenue+'&date='+d, {cache:'no-store'}).then(r=>r.json());
+    const [cur, prev] = await Promise.all([get(todayStr), get(prevStr)]);
+    const hrOf = (h)=> parseInt(String(h.hourLabel).split(':')[0],10);
+    let cutoff;
+    if(currentVenue==='guncotton'){
+      const hrs = (cur.hours||[]).map(hrOf).filter(n=>!isNaN(n));
+      if(!hrs.length) return null;
+      cutoff = Math.max(...hrs) + 1;
+    } else {
+      const now = new Date(); cutoff = now.getHours() + now.getMinutes()/60;
+    }
+    let revenue = 0;
+    (prev.hours||[]).forEach(h=>{
+      const hr = hrOf(h);
+      if(hr+1 <= cutoff) revenue += h.nett; else if(hr < cutoff) revenue += h.nett*(cutoff-hr);
+    });
+    const dayName = new Date(prevStr+'T00:00:00').toLocaleDateString('en-AU',{weekday:'long'});
+    return { revenue, dayName };
+  }catch(e){ return null; }
 }
 
 async function fetchPosHours(myGen, silent){
@@ -656,7 +688,8 @@ function renderCards(data){
 
   // Same figures for the previous comparable period, so Revenue/Profit/Wage % can show a "vs last week" badge.
   const pAcc = prev.accounting;
-  const pRevenue = pAcc ? pAcc.revenue : null;
+  const pRevenue = data.prevSameTime!=null ? data.prevSameTime : (pAcc ? pAcc.revenue : null);
+  const sameTimeMode = data.prevSameTime!=null; // costs can't be matched by time of day, so profit/wage badges are left off
   const pWagepct = (pAcc && pRevenue) ? (pAcc.wagesSuper/pRevenue) : null;
   const pProfit = pAcc ? (pRevenue - pAcc.cogs - pAcc.wagesSuper - pAcc.overheads) : null;
 
@@ -675,8 +708,8 @@ function renderCards(data){
   const prevLoading = !!(prev.pos && prev.pos.pending > 0);
   const noPrior = (pRevenue==null || pRevenue===0);
   const revenueBadge = prevLoading ? '<span style="color:var(--muted)">Loading comparison…</span>' : noPrior ? (revenue!=null ? '<span style="color:var(--muted)">No comparison data yet</span>' : '') : deltaBadge(revenue, pRevenue, false);
-  const profitBadge = (noPrior || prevLoading) ? '' : deltaBadge(profit, pProfit, false);
-  const wagepctBadge = (noPrior || prevLoading) ? '' : deltaBadge(wagepct, pWagepct, true);
+  const profitBadge = (noPrior || prevLoading || sameTimeMode) ? '' : deltaBadge(profit, pProfit, false);
+  const wagepctBadge = (noPrior || prevLoading || sameTimeMode) ? '' : deltaBadge(wagepct, pWagepct, true);
 
   const vals = {
     revenue: revenue==null?null:fmtMoney(revenue*GST),
