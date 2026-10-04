@@ -383,39 +383,39 @@ async function fetchGoals(r, myGen, silent, period){
     if(data.error){ el.innerHTML = '<span style="color:var(--muted)">Not available — '+escHtml(data.error)+'</span>'; return; }
     const actualByDate = {}; (data.days||[]).forEach(d=>{ actualByDate[d.date] = d.cats || {}; });
 
-    const rows = {}; Object.keys(DG_GOALS.items).forEach(k=>{ rows[k] = {qty:0, gross:0, goalQty:0, dueQty:0}; });
+    const rows = {}; Object.keys(DG_GOALS.items).forEach(k=>{ rows[k] = {gross:0, goalGross:0, dueGross:0}; });
     let totalGross = 0, goalGross = 0, dueGross = 0;
     const other = {};
     for(let d = r.from; d <= r.to; d = addDays(d,1)){
       const w = weekdayIdx(d);
       const share = d < todayStr ? 1 : d === todayStr ? pace : 0; // how much of this day's goal should be done by now
       Object.keys(DG_GOALS.items).forEach(k=>{
-        const g = DG_GOALS.items[k][w];
-        rows[k].goalQty += g; rows[k].dueQty += g*share;
-        goalGross += g*DG_GOALS.prices[k]; dueGross += g*DG_GOALS.prices[k]*share;
+        const g = DG_GOALS.items[k][w]*DG_GOALS.prices[k]; // goal in dollars = items × set price
+        rows[k].goalGross += g; rows[k].dueGross += g*share;
+        goalGross += g; dueGross += g*share;
       });
       Object.entries(actualByDate[d] || {}).forEach(([name, v])=>{
         totalGross += v.gross || 0;
         const key = GOAL_BY_NORM[goalNorm(name)];
-        if(key){ rows[key].qty += v.qty || 0; rows[key].gross += v.gross || 0; }
+        if(key){ rows[key].gross += v.gross || 0; }
         else other[name] = (other[name]||0) + (v.gross||0);
       });
     }
     const money = (n)=> '$'+Math.round(n).toLocaleString();
-    const qty = (n)=> Math.round(n).toLocaleString();
+    const pctText = (ratio)=> ratio==null ? '—' : Math.round(ratio*100)+'%';
     const bar = (actual, full, ratio)=> '<div class="gbar"><div style="width:'+(full>0?Math.min(100, actual/full*100):0).toFixed(1)+'%;background:'+goalColour(ratio)+'"></div></div>';
     const inProgress = r.to >= todayStr;
     let html = '';
     Object.keys(DG_GOALS.items).forEach(k=>{
       const x = rows[k];
-      if(x.goalQty===0 && x.qty===0) return; // e.g. donuts on a weekday
-      const ratio = x.dueQty > 0 ? x.qty/x.dueQty : (x.qty>0 ? 1 : null);
-      html += '<div class="grow"><span>'+escHtml(k)+'</span><span style="color:'+goalColour(ratio)+'">'+qty(x.qty)+' / '+qty(x.goalQty)+'</span><span>'+money(x.gross)+' <span style="color:var(--muted);font-weight:400">/ '+money(x.goalQty*DG_GOALS.prices[k])+'</span></span></div>'+bar(x.qty, x.goalQty, ratio);
+      if(x.goalGross===0 && x.gross===0) return; // e.g. donuts on a weekday
+      const ratio = x.dueGross > 0 ? x.gross/x.dueGross : (x.gross>0 ? 1 : null);
+      html += '<div class="grow"><span>'+escHtml(k)+'</span><span style="color:'+goalColour(ratio)+'">'+pctText(ratio)+'</span><span>'+money(x.gross)+' <span style="color:var(--muted);font-weight:400">/ '+money(x.goalGross)+'</span></span></div>'+bar(x.gross, x.goalGross, ratio);
     });
     const tRatio = dueGross > 0 ? totalGross/dueGross : null;
-    html += '<div class="grow total"><span>Total gross sales</span><span style="color:'+goalColour(tRatio)+'">'+(tRatio==null?'—':Math.round(tRatio*100)+'%')+'</span><span>'+money(totalGross)+' <span style="color:var(--muted);font-weight:400">/ '+money(goalGross)+'</span></span></div>'+bar(totalGross, goalGross, tRatio);
+    html += '<div class="grow total"><span>Total gross sales</span><span style="color:'+goalColour(tRatio)+'">'+pctText(tRatio)+'</span><span>'+money(totalGross)+' <span style="color:var(--muted);font-weight:400">/ '+money(goalGross)+'</span></span></div>'+bar(totalGross, goalGross, tRatio);
     const otherNames = Object.keys(other);
-    let notes = '<div class="glegend">Items sold / goal for the period · gross incl. GST. ';
+    let notes = '<div class="glegend">Gross sales / goal for the period, incl. GST. ';
     notes += inProgress ? 'Colours compare against where you should be <b>by now</b>: ' : 'Colours: ';
     notes += '<b style="color:var(--good)">on goal</b>, <b style="color:var(--warn)">80–99%</b>, <b style="color:var(--bad)">under 80%</b>.</div>';
     if(otherNames.length) notes += '<div class="glegend">Also sold (no goal set, counted in the total): '+otherNames.map(n=>escHtml(n)+' '+money(other[n])).join(' · ')+'</div>';
