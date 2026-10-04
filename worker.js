@@ -986,15 +986,47 @@ export default {
     // pipeline (mail rule turned off, CloudMailin issue, etc.) the same day rather than days later.
     if (path === '/api/bepoz-health') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
-      const list = await env.TOKENS.list({ prefix: 'bepoz:' });
-      const keys = list.keys.map(k => k.name).sort();
+      // Page through every stored report key (a single list call stops at 1,000 keys, the oldest ones).
+      const keys = [];
+      let cursor;
+      do {
+        const list = await env.TOKENS.list({ prefix: 'bepoz:', cursor });
+        list.keys.forEach((k) => keys.push(k.name));
+        cursor = list.list_complete ? null : list.cursor;
+      } while (cursor);
+      keys.sort();
       const lastKey = keys[keys.length - 1] || null;
       const lastReceivedAt = lastKey ? lastKey.slice('bepoz:'.length) : null;
       const minutesSinceLast = lastReceivedAt ? Math.round((Date.now() - new Date(lastReceivedAt).getTime()) / 60000) : null;
-      const nowBrisbane = toBrisbane(new Date());
-      const withinTradingHours = nowBrisbane.hour >= 6 && nowBrisbane.hour < 20;
+
+      // Learn this weekday's trading window from when reports actually arrived on the same weekday over
+      // the last 4 weeks, so there's no alert before opening, after close, or on a day we're shut.
+      const minsOfDay = (t) => { const d = new Date(t.getTime() + 10 * 3600 * 1000); return d.getUTCHours() * 60 + d.getUTCMinutes(); };
+      const weekdayOf = (t) => new Date(t.getTime() + 10 * 3600 * 1000).getUTCDay();
+      const now = new Date();
+      const nowMins = minsOfDay(now), today = weekdayOf(now);
+      const cutoff = now.getTime() - 28 * 86400000;
+      const todayStart = now.getTime() - nowMins * 60000;
+      let first = null, last = null, daysSeen = new Set();
+      for (const k of keys) {
+        const t = new Date(k.slice('bepoz:'.length));
+        if (isNaN(t) || t.getTime() < cutoff || t.getTime() >= todayStart || weekdayOf(t) !== today) continue;
+        const m = minsOfDay(t);
+        daysSeen.add(toBrisbane(t).dateStr);
+        if (first === null || m < first) first = m;
+        if (last === null || m > last) last = m;
+      }
+      let withinTradingHours;
+      if (daysSeen.size) {
+        // Allow 90 minutes after the usual first report before worrying, and stop once the usual last report time has passed.
+        withinTradingHours = nowMins >= first + 90 && nowMins <= last;
+      } else {
+        // No reports on this weekday in the last 4 weeks: likely a day we don't trade, so stay quiet.
+        withinTradingHours = false;
+      }
       const warning = withinTradingHours && (minutesSinceLast === null || minutesSinceLast > 90);
-      return json({ lastReceivedAt, minutesSinceLast, withinTradingHours, warning });
+      const fmtHM = (m) => m == null ? null : String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+      return json({ lastReceivedAt, minutesSinceLast, withinTradingHours, usualFirstReport: fmtHM(first), usualLastReport: fmtHM(last), warning });
     }
     if (path === '/api/tracking-audit') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
