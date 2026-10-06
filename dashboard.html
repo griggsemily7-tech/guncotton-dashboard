@@ -285,10 +285,13 @@ function renderBreakdown(data){
   if(!data.categories || !data.categories.length) return '<div class="dnote">No item sales found for this time.</div>';
   const money = (n)=> '$'+n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
   const qty = (n)=> Number.isInteger(n) ? n : n.toFixed(1);
-  const head = '<div class="dhead">'+qty(data.totalQty)+' items sold · '+money(data.totalNet)+' (before GST, after discounts) — tap a category for the items</div>';
+  // Shown incl. GST (what customers paid, after discounts) to match the till and the rest of the sales figures.
+  const g = (x)=> x.gross!=null ? x.gross : x.net*1.1;
+  const totalGross = data.categories.reduce((a,c)=>a+g(c),0);
+  const head = '<div class="dhead">'+qty(data.totalQty)+' items sold · '+money(totalGross)+' (incl. GST, after discounts) — tap a category for the items</div>';
   return head + data.categories.map(c=>
-    '<div class="prow crow"><span><span class="chev">▸</span>'+escHtml(c.name)+'</span><span>'+qty(c.qty)+' sold</span><span>'+money(c.net)+'</span></div>'+
-    '<div class="citems">'+c.items.map(i=>'<div class="prow"><span>'+escHtml(i.name)+'</span><span>'+qty(i.qty)+'</span><span>'+money(i.net)+'</span></div>').join('')+'</div>'
+    '<div class="prow crow"><span><span class="chev">▸</span>'+escHtml(c.name)+'</span><span>'+qty(c.qty)+' sold</span><span>'+money(g(c))+'</span></div>'+
+    '<div class="citems">'+c.items.map(i=>'<div class="prow"><span>'+escHtml(i.name)+'</span><span>'+qty(i.qty)+'</span><span>'+money(g(i))+'</span></div>').join('')+'</div>'
   ).join('');
 }
 
@@ -329,7 +332,7 @@ const GST = 1.1;
 // Items-sold goals per category per weekday, and the set average price per item (incl. GST).
 // Gross goal = items × price. To change a goal, edit the numbers here.
 const DG_GOALS = {
-  prices: { 'Retail Coffee': 40, 'Hot Coffee': 6.5, 'Breakfast': 22, 'Cookies': 8, 'Cold drinks': 8, 'Donuts': 4.5 },
+  prices: { 'Retail Coffee': 40, 'Hot Coffee': 6.5, 'Breakfast': 22, 'Cookies': 8.5, 'Cold drinks': 8, 'Donuts': 4.5 },
   //                   Mon  Tue  Wed  Thu  Fri  Sat  Sun
   items: {
     'Retail Coffee': [  25,  25,  25,  25,  25,  50,  50],
