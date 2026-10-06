@@ -508,8 +508,8 @@ async function squareBreakdown(env, date, hour) {
     const itemName = li.name || (meta && meta.item) || 'Item';
     const c = cats[catName] || (cats[catName] = { name: catName, qty: 0, net: 0, gross: 0, items: {} });
     c.qty += qty; c.net += cents / 100; c.gross += ((li.total_money && li.total_money.amount) || 0) / 100;
-    const it = c.items[itemName] || (c.items[itemName] = { name: itemName, qty: 0, net: 0 });
-    it.qty += qty; it.net += cents / 100;
+    const it = c.items[itemName] || (c.items[itemName] = { name: itemName, qty: 0, net: 0, gross: 0 });
+    it.qty += qty; it.net += cents / 100; it.gross += ((li.total_money && li.total_money.amount) || 0) / 100;
     totalQty += qty; totalCents += cents;
   }
   const categories = Object.values(cats)
