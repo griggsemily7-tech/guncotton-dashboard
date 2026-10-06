@@ -518,10 +518,20 @@ async function squareBreakdown(env, date, hour) {
     it.qty += qty; it.net += cents / 100; it.gross += itemCents / 100;
     totalQty += qty; totalCents += cents;
   }
+  // Name the extras from the orders' own service charges (e.g. "Public holiday surcharge", "Card surcharge"),
+  // so the dashboard shows what each one actually is. Anything left over that has no name goes under "Other".
+  const extrasByName = {};
+  orders.forEach((o) => (o.service_charges || []).forEach((sc) => {
+    const n = sc.name || 'Service charge';
+    extrasByName[n] = (extrasByName[n] || 0) + amt(sc.total_money || sc.applied_money);
+  }));
+  let namedCents = Object.values(extrasByName).reduce((a, b) => a + b, 0);
+  const extras = Object.entries(extrasByName).map(([name, c]) => ({ name, gross: c / 100 }));
+  if (surchargeCents - namedCents > 1) extras.push({ name: 'Other (no name in Square)', gross: (surchargeCents - namedCents) / 100 });
   const categories = Object.values(cats)
     .map((c) => ({ name: c.name, qty: c.qty, net: c.net, gross: c.gross, items: Object.values(c.items).sort((a, b) => b.qty - a.qty) }))
     .sort((a, b) => b.net - a.net);
-  return { date, hour: hour == null ? null : hour, orders: orders.length, totalQty, totalNet: totalCents / 100, surchargeGross: surchargeCents / 100, categories };
+  return { date, hour: hour == null ? null : hour, orders: orders.length, totalQty, totalNet: totalCents / 100, surchargeGross: surchargeCents / 100, extras, categories };
 }
 
 // Per-day items sold + gross (incl. GST) by Square category — powers the Doughgirlz sales goals panel.
