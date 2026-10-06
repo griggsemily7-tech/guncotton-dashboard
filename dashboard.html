@@ -293,7 +293,9 @@ function renderBreakdown(data){
   return head + data.categories.map(c=>
     '<div class="prow crow"><span><span class="chev">▸</span>'+escHtml(c.name)+'</span><span>'+qty(c.qty)+' sold</span><span>'+money(g(c))+'</span></div>'+
     '<div class="citems">'+c.items.map(i=>'<div class="prow"><span>'+escHtml(i.name)+'</span><span>'+qty(i.qty)+'</span><span>'+money(g(i))+'</span></div>').join('')+'</div>'
-  ).join('') + (surcharge > 0.005 ? '<div class="prow"><span>Surcharges (e.g. public holiday)</span><span></span><span>'+money(surcharge)+'</span></div>' : '');
+  ).join('') + (surcharge > 0.005 ? ((data.extras && data.extras.length) ? data.extras : [{name:'Surcharges', gross:surcharge}])
+      .filter(x=>Math.abs(x.gross)>0.005)
+      .map(x=>'<div class="prow"><span>'+escHtml(x.name)+'</span><span></span><span>'+money(x.gross)+'</span></div>').join('') : '');
 }
 
 async function loadDrill(row){
