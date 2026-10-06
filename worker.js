@@ -998,6 +998,39 @@ export default {
         return json({ ok: false, testedAt: new Date().toISOString(), error: String(e && e.message || e), status: e.status || null, body: e.body || null }, 200);
       }
     }
+    // One-off, read-only: asks Roubler's staging GraphQL API to describe itself (standard GraphQL
+    // introspection), so we can write the exact Locations / Shifts / Timesheets / Pay-rate test queries
+    // Roubler asked for. Returns only the parts relevant to those, keeping the output readable.
+    if (path === '/api/roubler-schema') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const introspect = {
+        operationName: 'Schema',
+        query: 'query Schema { __schema { queryType { name } types { name kind fields { name args { name type { name kind ofType { name kind ofType { name kind ofType { name kind } } } } } type { name kind ofType { name kind ofType { name kind ofType { name kind } } } } } enumValues { name } inputFields { name type { name kind ofType { name kind ofType { name kind } } } } } } }'
+      };
+      const typeStr = (t) => !t ? '?' : t.kind === 'NON_NULL' ? typeStr(t.ofType) + '!' : t.kind === 'LIST' ? '[' + typeStr(t.ofType) + ']' : t.name;
+      const baseName = (t) => !t ? null : (t.name || baseName(t.ofType));
+      try {
+        const data = await roublerGraphQL(env, introspect, {});
+        const schema = data && data.data && data.data.__schema;
+        if (!schema) return json({ ok: false, note: 'introspection returned no schema (it may be disabled)', raw: data });
+        const byName = {}; schema.types.forEach((t) => { byName[t.name] = t; });
+        const root = byName[schema.queryType.name];
+        const kw = /location|shift|roster|timesheet|clock|attendance|pay|rate|cost|wage|employee|award/i;
+        const queries = (root.fields || []).filter((f) => kw.test(f.name)).map((f) => ({
+          name: f.name,
+          args: (f.args || []).map((a) => a.name + ': ' + typeStr(a.type)),
+          returns: typeStr(f.type)
+        }));
+        // Describe the object types those queries return (and the types one level inside them).
+        const want = new Set(); queries.forEach((q) => { const b = baseName((root.fields.find((f) => f.name === q.name) || {}).type); if (b) want.add(b); });
+        [...want].forEach((n) => ((byName[n] && byName[n].fields) || []).forEach((f) => { const b = baseName(f.type); if (b && byName[b] && byName[b].kind === 'OBJECT' && kw.test(b)) want.add(b); }));
+        const types = {};
+        want.forEach((n) => { const t = byName[n]; if (!t) return; types[n] = t.fields ? t.fields.map((f) => f.name + ': ' + typeStr(f.type)) : t.enumValues ? t.enumValues.map((e) => e.name) : (t.inputFields || []).map((f) => f.name + ': ' + typeStr(f.type)); });
+        return json({ ok: true, allQueryNames: (root.fields || []).map((f) => f.name), relevantQueries: queries, types });
+      } catch (e) {
+        return json({ ok: false, error: String(e && e.message || e), status: e.status || null, body: e.body || null }, 200);
+      }
+    }
     // One-off diagnostic: compares the untracked (whole-business) P&L total against the sum of every
     // known "Location" option for the same period, so we can see how much revenue/COGS isn't tagged at all.
     // Flags if Bepoz's hourly emails have gone quiet during trading hours — catches a broken
