@@ -179,8 +179,8 @@ async function roublerRefresh(env) {
   await saveTokens(env, 'roubler', updated);
   return updated.access_token;
 }
-async function roublerGraphQL(env, query, variables) {
-  const token = await roublerRefresh(env);
+async function roublerGraphQL(env, query, variables, accessToken) {
+  const token = accessToken || await roublerRefresh(env);
   const res = await fetch(ROUBLER.graphqlUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
@@ -1001,6 +1001,51 @@ export default {
       } catch (e) {
         return json({ ok: false, testedAt: new Date().toISOString(), error: String(e && e.message || e), status: e.status || null, body: e.body || null }, 200);
       }
+    }
+    // Read-only staging test of every query we've asked Roubler for (Employees, Locations, Rosters/Shifts,
+    // Timesheets/Clock events, Pay rates & costs). Returns each query, its variables, and Roubler's raw
+    // response or error — exactly the "test results" Roubler asked for before approving production.
+    // Runs the queries one after another on ONE access token (no parallel token refreshes).
+    if (path === '/api/roubler-tests') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const end = new Date();
+      const start = new Date(end.getTime() - 14 * 86400000);
+      const range = { startTime: start.toISOString(), endTime: end.toISOString() };
+      const tests = [
+        { area: 'Employees', operationName: 'TestEmployees', variables: { statuses: ['Active'] },
+          query: 'query TestEmployees($statuses: [EmployeeStatus!]) { employees(statuses: $statuses) { id fullName status rosterable startDate location { id name } position { id name } payType payBasis payRate payHoursPerWeek payLevel { id name } payGroup { id name } } }' },
+        { area: 'Locations', operationName: 'TestLocations', variables: {},
+          query: 'query TestLocations { locations { id name alias timeZone archived rosterable reportable parent { id name } } }' },
+        { area: 'Rosters/Shifts', operationName: 'TestShifts', variables: { ...range, includeCostings: true },
+          query: 'query TestShifts($startTime: DateTime!, $endTime: DateTime!, $includeCostings: Boolean) { shifts(startTime: $startTime, endTime: $endTime, includeCostings: $includeCostings) { id startTime endTime timezone hours breakHours cost published employeeId employee { id fullName } location { id name } position { id name } } }' },
+        { area: 'Timesheets', operationName: 'TestTimesheets', variables: { ...range, includePending: true },
+          query: 'query TestTimesheets($startTime: DateTime!, $endTime: DateTime!, $includePending: Boolean) { timesheets(startTime: $startTime, endTime: $endTime, includePending: $includePending) { id startTime endTime hours breakHours cost status employee { id fullName } location { id name } position { id name } } }' },
+        { area: 'Clock events', operationName: 'TestClocks', variables: range,
+          query: 'query TestClocks($startTime: DateTime, $endTime: DateTime) { clocks(startTime: $startTime, endTime: $endTime) { id clockStatus timeLocal timeServer employeeId shiftId location { id name } timesheet { id } } }' },
+        { area: 'Pay rates (pay levels)', operationName: 'TestPayLevels', variables: { includeGlobal: true },
+          query: 'query TestPayLevels($includeGlobal: Boolean) { payLevels(includeGlobal: $includeGlobal) { id name alias isGlobal versions { id name amount commencedAt } } }' },
+        { area: 'Pay rates (pay types)', operationName: 'TestPayTypes', variables: {},
+          query: 'query TestPayTypes { payTypes { id name amount multiplier externalId } }' },
+        { area: 'Labour cost metrics (timesheets)', operationName: 'TestTimesheetMetrics', variables: { ...range, timezone: 'Australia/Brisbane' },
+          query: 'query TestTimesheetMetrics($startTime: DateTime!, $endTime: DateTime!, $timezone: String) { timesheetMetrics(startTime: $startTime, endTime: $endTime, timezone: $timezone) { date hours cost count } }' },
+        { area: 'Labour cost metrics (rostered shifts)', operationName: 'TestShiftMetrics', variables: { ...range, timezone: 'Australia/Brisbane' },
+          query: 'query TestShiftMetrics($startTime: DateTime!, $endTime: DateTime!, $timezone: String) { shiftMetrics(startTime: $startTime, endTime: $endTime, timezone: $timezone) { date hours cost count } }' }
+      ];
+      let token;
+      try { token = await roublerRefresh(env); }
+      catch (e) { return json({ ok: false, step: 'token', error: String(e && e.message || e) }, 200); }
+      const results = [];
+      for (const t of tests) {
+        try {
+          const raw = await roublerGraphQL(env, { operationName: t.operationName, query: t.query }, t.variables, token);
+          const dataVal = raw && raw.data ? Object.values(raw.data)[0] : null;
+          results.push({ area: t.area, passed: !(raw && raw.errors && raw.errors.length), records: Array.isArray(dataVal) ? dataVal.length : (dataVal ? 1 : 0), errors: (raw && raw.errors) || null, query: t.query, variables: t.variables, rawResponse: raw });
+        } catch (e) {
+          results.push({ area: t.area, passed: false, records: 0, errors: [String(e && e.message || e)], httpStatus: e.status || null, query: t.query, variables: t.variables, rawResponse: e.body || null });
+        }
+      }
+      await noteSync(env, 'roubler');
+      return json({ environment: 'staging', readOnly: true, testedAt: new Date().toISOString(), summary: results.map((r) => ({ area: r.area, passed: r.passed, records: r.records, errors: r.errors ? r.errors.map((x) => x.message || x) : null })), results });
     }
     // One-off, read-only: asks Roubler's staging GraphQL API to describe itself (standard GraphQL
     // introspection), so we can write the exact Locations / Shifts / Timesheets / Pay-rate test queries
