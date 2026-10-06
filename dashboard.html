@@ -287,12 +287,13 @@ function renderBreakdown(data){
   const qty = (n)=> Number.isInteger(n) ? n : n.toFixed(1);
   // Shown incl. GST (what customers paid, after discounts) to match the till and the rest of the sales figures.
   const g = (x)=> x.gross!=null ? x.gross : x.net*1.1;
-  const totalGross = data.categories.reduce((a,c)=>a+g(c),0);
+  const surcharge = data.surchargeGross || 0;
+  const totalGross = data.categories.reduce((a,c)=>a+g(c),0) + surcharge;
   const head = '<div class="dhead">'+qty(data.totalQty)+' items sold · '+money(totalGross)+' (incl. GST, after discounts) — tap a category for the items</div>';
   return head + data.categories.map(c=>
     '<div class="prow crow"><span><span class="chev">▸</span>'+escHtml(c.name)+'</span><span>'+qty(c.qty)+' sold</span><span>'+money(g(c))+'</span></div>'+
     '<div class="citems">'+c.items.map(i=>'<div class="prow"><span>'+escHtml(i.name)+'</span><span>'+qty(i.qty)+'</span><span>'+money(g(i))+'</span></div>').join('')+'</div>'
-  ).join('');
+  ).join('') + (surcharge > 0.005 ? '<div class="prow"><span>Surcharges (e.g. public holiday)</span><span></span><span>'+money(surcharge)+'</span></div>' : '');
 }
 
 async function loadDrill(row){
