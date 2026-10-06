@@ -160,7 +160,10 @@ const ROUBLER = {
 // Cloudflare secret (ROUBLER_INITIAL_REFRESH_TOKEN) obtained via the one-time Postman login Roubler described.
 async function roublerRefresh(env) {
   let t = await getTokens(env, 'roubler');
-  if (!t && env.ROUBLER_INITIAL_REFRESH_TOKEN) t = { refresh_token: env.ROUBLER_INITIAL_REFRESH_TOKEN };
+  // A new refresh token put in the Cloudflare secret (e.g. after a fresh Postman login) always takes over
+  // from whatever is stored, so recovering from a dead token is just: new Postman login → update the secret.
+  const seed = env.ROUBLER_INITIAL_REFRESH_TOKEN;
+  if (seed && (!t || t.seed !== seed)) t = { refresh_token: seed, seed };
   if (!t || !t.refresh_token) { const e = new Error('no roubler refresh token configured'); e.status = 401; throw e; }
   if (t.access_token && t.expires_at && Date.now() < t.expires_at - 60000) return t.access_token;
   const body = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: t.refresh_token });
@@ -172,7 +175,7 @@ async function roublerRefresh(env) {
   if (!res.ok) { const e = new Error('roubler refresh failed: ' + (await res.text().catch(() => ''))); e.status = res.status; throw e; }
   const fresh = await res.json();
   // Roubler invalidates the old refresh token on every use, so the new one MUST be persisted or the next call breaks.
-  const updated = { access_token: fresh.access_token, refresh_token: fresh.refresh_token || t.refresh_token, expires_at: Date.now() + ((fresh.expires_in || 1800) * 1000) };
+  const updated = { access_token: fresh.access_token, refresh_token: fresh.refresh_token || t.refresh_token, expires_at: Date.now() + ((fresh.expires_in || 1800) * 1000), seed: t.seed || seed || null };
   await saveTokens(env, 'roubler', updated);
   return updated.access_token;
 }
@@ -200,8 +203,9 @@ async function roublerStatus(env) {
   return cached(env, 'status-cache:roubler', 60, async () => {
     const configured = !!(env.ROUBLER_CLIENT_ID && env.ROUBLER_CLIENT_SECRET && (env.ROUBLER_INITIAL_REFRESH_TOKEN || (await getTokens(env, 'roubler'))));
     if (!configured) return { configured: false, connected: false };
-    try { await roublerRefresh(env); return { configured: true, connected: true, lastSync: await lastSync(env, 'roubler') }; }
-    catch (err) { return { configured: true, connected: false, error: { code: err.status || 0, message: String(err.message || err) } }; }
+    // Deliberately doesn't refresh the token here: Roubler cancels the whole token chain if an old refresh
+    // token is ever reused, and overlapping dashboard loads refreshing at once can trigger exactly that.
+    return { configured: true, connected: null, lastSync: await lastSync(env, 'roubler') };
   });
 }
 
