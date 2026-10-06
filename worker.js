@@ -499,23 +499,29 @@ async function squareBreakdown(env, date, hour) {
   const variationIds = [...new Set(lines.map((li) => li.catalog_object_id).filter(Boolean))];
   const catMap = variationIds.length ? await squareCategoriesFor(env, variationIds) : {};
   const cats = {};
-  let totalQty = 0, totalCents = 0;
+  let totalQty = 0, totalCents = 0, surchargeCents = 0;
+  const amt = (m) => (m && m.amount) || 0;
   for (const li of lines) {
+    // What the item itself sold for, incl. GST, after discounts — excludes surcharges (e.g. public holiday 15%),
+    // which Square spreads across the line items. This matches Square's own category report.
+    const itemCents = amt(li.gross_sales_money) ? amt(li.gross_sales_money) - amt(li.total_discount_money) : amt(li.total_money);
+    const sc = amt(li.total_money) - itemCents;
+    if (sc > 0) surchargeCents += sc;
     const qty = parseFloat(li.quantity) || 0;
     const cents = ((li.total_money && li.total_money.amount) || 0) - ((li.total_tax_money && li.total_tax_money.amount) || 0);
     const meta = li.catalog_object_id ? catMap[li.catalog_object_id] : null;
     const catName = meta ? meta.category : 'Uncategorised';
     const itemName = li.name || (meta && meta.item) || 'Item';
     const c = cats[catName] || (cats[catName] = { name: catName, qty: 0, net: 0, gross: 0, items: {} });
-    c.qty += qty; c.net += cents / 100; c.gross += ((li.total_money && li.total_money.amount) || 0) / 100;
+    c.qty += qty; c.net += cents / 100; c.gross += itemCents / 100;
     const it = c.items[itemName] || (c.items[itemName] = { name: itemName, qty: 0, net: 0, gross: 0 });
-    it.qty += qty; it.net += cents / 100; it.gross += ((li.total_money && li.total_money.amount) || 0) / 100;
+    it.qty += qty; it.net += cents / 100; it.gross += itemCents / 100;
     totalQty += qty; totalCents += cents;
   }
   const categories = Object.values(cats)
     .map((c) => ({ name: c.name, qty: c.qty, net: c.net, gross: c.gross, items: Object.values(c.items).sort((a, b) => b.qty - a.qty) }))
     .sort((a, b) => b.net - a.net);
-  return { date, hour: hour == null ? null : hour, orders: orders.length, totalQty, totalNet: totalCents / 100, categories };
+  return { date, hour: hour == null ? null : hour, orders: orders.length, totalQty, totalNet: totalCents / 100, surchargeGross: surchargeCents / 100, categories };
 }
 
 // Per-day items sold + gross (incl. GST) by Square category — powers the Doughgirlz sales goals panel.
@@ -525,7 +531,7 @@ async function squareCategoryDays(env, from, to, budget) {
   budget = budget || { left: 4 };
   const today = toBrisbane(new Date()).dateStr;
   const dates = listDates(from, to).filter((d) => d <= today);
-  const cachedVals = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqgoal:' + d) : null)));
+  const cachedVals = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqgoal2:' + d) : null)));
   const days = [];
   let pending = 0;
   for (let i = 0; i < dates.length; i++) {
@@ -536,7 +542,8 @@ async function squareCategoryDays(env, from, to, budget) {
       const b = await squareBreakdown(env, d, null);
       rec = { cats: {} };
       b.categories.forEach((c) => { rec.cats[c.name] = { qty: c.qty, gross: c.gross }; });
-      if (d < today) { await env.TOKENS.put('sqgoal:' + d, JSON.stringify(rec)); budget.left--; }
+      if (b.surchargeGross > 0.005) rec.cats['Surcharges'] = { qty: 0, gross: b.surchargeGross };
+      if (d < today) { await env.TOKENS.put('sqgoal2:' + d, JSON.stringify(rec)); budget.left--; }
     }
     days.push({ date: d, cats: rec.cats });
   }
