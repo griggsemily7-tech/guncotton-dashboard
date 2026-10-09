@@ -291,7 +291,7 @@ function renderBreakdown(data){
   const totalGross = data.categories.reduce((a,c)=>a+g(c),0) + surcharge;
   const head = '<div class="dhead">'+qty(data.totalQty)+' items sold · '+money(totalGross)+' (incl. GST, after discounts) — tap a category for the items</div>';
   return head + data.categories.map(c=>
-    '<div class="prow crow"><span><span class="chev">▸</span>'+escHtml(c.name)+'</span><span>'+qty(c.qty)+' sold</span><span>'+money(g(c))+'</span></div>'+
+    '<div class="prow crow"><span><span class="chev">▸</span>'+escHtml(catLabel(c.name))+'</span><span>'+qty(c.qty)+' sold</span><span>'+money(g(c))+'</span></div>'+
     '<div class="citems">'+c.items.map(i=>'<div class="prow"><span>'+escHtml(i.name)+'</span><span>'+qty(i.qty)+'</span><span>'+money(g(i))+'</span></div>').join('')+'</div>'
   ).join('') + (surcharge > 0.005 ? ((data.extras && data.extras.length) ? data.extras : [{name:'Surcharges', gross:surcharge}])
       .filter(x=>Math.abs(x.gross)>0.005)
@@ -335,12 +335,12 @@ const GST = 1.1;
 // Items-sold goals per category per weekday, and the set average price per item (incl. GST).
 // Gross goal = items × price. To change a goal, edit the numbers here.
 const DG_GOALS = {
-  prices: { 'Retail Coffee': 40, 'Hot Coffee': 6.5, 'Breakfast': 22, 'Cookies': 8.5, 'Cold drinks': 8, 'Donuts': 4.5 },
+  prices: { 'Retail Coffee': 40, 'Hot Coffee': 6.5, 'Toasties': 22, 'Cookies': 8.5, 'Cold drinks': 8, 'Donuts': 4.5 },
   //                   Mon  Tue  Wed  Thu  Fri  Sat  Sun
   items: {
     'Retail Coffee': [  25,  25,  25,  25,  25,  50,  50],
     'Hot Coffee':    [ 100,  90,  90,  90, 100, 250, 250],
-    'Breakfast':     [  35,  30,  30,  30,  35,  75,  75],
+    'Toasties':      [  35,  30,  30,  30,  35,  75,  75],
     'Cookies':       [  35,  30,  30,  30,  35,  75,  75],
     'Cold drinks':   [  40,  30,  30,  30,  40,  50,  50],
     'Donuts':        [   0,   0,   0,   0,   0, 200, 200]
@@ -348,6 +348,11 @@ const DG_GOALS = {
 };
 const goalNorm = (s)=> String(s).toLowerCase().replace(/[^a-z]/g,'').replace(/s$/,'');
 const GOAL_BY_NORM = {}; Object.keys(DG_GOALS.items).forEach(k=>{ GOAL_BY_NORM[goalNorm(k)] = k; });
+// Display names for Square categories (Square still calls Toasties "Breakfast"). Matching works with either name,
+// so nothing breaks if the category is renamed in Square later.
+const CATEGORY_LABELS = { breakfast: 'Toasties' };
+GOAL_BY_NORM[goalNorm('Breakfast')] = 'Toasties';
+const catLabel = (name)=> CATEGORY_LABELS[goalNorm(name)] || name;
 const weekdayIdx = (dateStr)=> (new Date(dateStr+'T00:00:00').getDay()+6)%7; // Mon=0 … Sun=6
 // Green = on or above goal, amber = 80–99% ("almost there"), red = under 80%.
 function goalColour(ratio){ if(ratio==null) return 'var(--muted)'; return ratio>=1 ? 'var(--good)' : ratio>=0.8 ? 'var(--warn)' : 'var(--bad)'; }
