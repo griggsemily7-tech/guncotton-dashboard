@@ -267,7 +267,7 @@ setInterval(() => { if(document.visibilityState === 'visible') fetchData(true); 
 // ---- click a row to see what sold, by category (Doughgirlz / Square) ----
 const openDrills = new Set(), drillCache = {};
 const escHtml = (s)=> String(s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const drillKey = (row)=> row.dataset.date+'|'+(row.dataset.hour==null?'':row.dataset.hour);
+const drillKey = (row)=> row.dataset.date+'|'+(row.dataset.hour==null?'':row.dataset.hour)+'|'+(row.dataset.to||'');
 
 // Only redraw a panel when its content actually changed, so an open row isn't collapsed by the 20-second refresh.
 function setPanel(el, html){
@@ -304,11 +304,18 @@ async function loadDrill(row){
   box.innerHTML = cachedRec ? cachedRec.html : '<div class="dnote">Loading…</div>';
   if(cachedRec && Date.now()-cachedRec.t < 60000) return;
   try{
-    const q = '/api/square-breakdown?date='+row.dataset.date+(row.dataset.hour!=null?'&hour='+row.dataset.hour:'');
+    // A week row (data-to) combines every day in that week; a day/hour row asks for just that day or hour.
+    const q = row.dataset.to
+      ? '/api/square-breakdown-range?from='+row.dataset.date+'&to='+row.dataset.to
+      : '/api/square-breakdown?date='+row.dataset.date+(row.dataset.hour!=null?'&hour='+row.dataset.hour:'');
     const res = await fetch(q, {cache:'no-store'});
-    const html = renderBreakdown(await res.json());
-    drillCache[key] = {html, t: Date.now()};
+    const data = await res.json();
+    let html = renderBreakdown(data);
+    if(data.pending>0) html = '<div class="dnote">Still adding up '+data.pending+' more day'+(data.pending===1?'':'s')+' — this fills in by itself in a few seconds.</div>' + html;
+    // Don't keep a part-finished week in the cache; ask again shortly so the remaining days get added.
+    drillCache[key] = {html, t: data.pending>0 ? 0 : Date.now()};
     if(box.isConnected && openDrills.has(key)) box.innerHTML = html;
+    if(data.pending>0) setTimeout(()=>{ if(box.isConnected && openDrills.has(key)) loadDrill(row); }, 2500);
   }catch(e){ if(box.isConnected) box.innerHTML = '<div class="dnote">Not available</div>'; }
 }
 
@@ -499,9 +506,9 @@ async function fetchDailySales(r, myGen, silent, period){
     const narrow = window.innerWidth < 600;
     const mode = (period==='month'||period==='lastmonth') ? 'week' : (period==='fy'||period==='lastfy') ? 'month' : 'day';
     const money = (n)=> '$'+n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
-    const canDrill = currentVenue==='doughgirlz' && mode==='day';
-    const row = (a,b,count,sales,date)=> {
-      const attrs = (canDrill && date) ? ' drill" data-date="'+date : '';
+    const canDrill = currentVenue==='doughgirlz' && (mode==='day' || mode==='week');
+    const row = (a,b,count,sales,date,to)=> {
+      const attrs = (canDrill && date) ? ' drill" data-date="'+date+(to ? '" data-to="'+to : '') : '';
       return '<div class="drow'+attrs+'"><span>'+(attrs?'<span class="chev">▸</span>':'')+a+'</span><span>'+b+'</span><span>'+count+' txns</span><span>'+money(sales*GST)+'</span></div>'+
         (attrs ? '<div class="detail" style="display:none"></div>' : '');
     };
@@ -533,7 +540,7 @@ async function fetchDailySales(r, myGen, silent, period){
         if(mode==='week'){
           const a = new Date(g.first+'T00:00:00').toLocaleDateString('en-AU', short);
           const b = new Date(g.last+'T00:00:00').toLocaleDateString('en-AU', short);
-          return row(narrow ? 'Wk' : 'Week of', a===b ? a : a+' – '+b, g.count, g.sales);
+          return row(narrow ? 'Wk' : 'Week of', a===b ? a : a+' – '+b, g.count, g.sales, g.first, g.last);
         }
         const dt = new Date(g.key+'-01T00:00:00');
         return row(dt.toLocaleDateString('en-AU', {month: narrow ? 'short' : 'long'}), dt.getFullYear(), g.count, g.sales);
