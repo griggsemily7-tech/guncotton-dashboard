@@ -948,6 +948,48 @@ export default {
     }
     // Click-through detail: what sold (by category, then item) in a day or an hour. Square only — Bepoz's
     // hourly email has no item detail.
+    // What sold across a range of days (e.g. one week), combining each day's category/item breakdown.
+    // Finished days never change, so each is worked out once and stored; today is always live. Only a few
+    // uncached days are worked out per request, so a long range may report `pending` and fill in on a retry.
+    if (path === '/api/square-breakdown-range') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const from = url.searchParams.get('from'), to = url.searchParams.get('to');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(from || '') || !/^\d{4}-\d{2}-\d{2}$/.test(to || '') || to < from) return json({ error: 'bad range' }, 400);
+      try {
+        const today = toBrisbane(new Date()).dateStr;
+        const dates = listDates(from, to).filter((d) => d <= today).slice(0, 31);
+        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd2:' + d) : null)));
+        let budget = 4, pending = 0, orders = 0, totalQty = 0, totalNet = 0, surchargeGross = 0;
+        const cats = {}, extras = {};
+        for (let i = 0; i < dates.length; i++) {
+          const d = dates[i];
+          let b = stored[i] ? JSON.parse(stored[i]) : null;
+          if (!b) {
+            if (d < today && budget <= 0) { pending++; continue; }
+            b = await squareBreakdown(env, d, null);
+            if (d < today) { await env.TOKENS.put('sqbd2:' + d, JSON.stringify(b)); budget--; }
+          }
+          orders += b.orders || 0; totalQty += b.totalQty || 0; totalNet += b.totalNet || 0; surchargeGross += b.surchargeGross || 0;
+          (b.extras || []).forEach((x) => { extras[x.name] = (extras[x.name] || 0) + (x.gross || 0); });
+          (b.categories || []).forEach((c) => {
+            const cc = cats[c.name] || (cats[c.name] = { name: c.name, qty: 0, net: 0, gross: 0, items: {} });
+            cc.qty += c.qty || 0; cc.net += c.net || 0; cc.gross += c.gross || 0;
+            (c.items || []).forEach((it) => {
+              const ii = cc.items[it.name] || (cc.items[it.name] = { name: it.name, qty: 0, net: 0, gross: 0 });
+              ii.qty += it.qty || 0; ii.net += it.net || 0; ii.gross += it.gross || 0;
+            });
+          });
+        }
+        const categories = Object.values(cats)
+          .map((c) => ({ ...c, items: Object.values(c.items).sort((a, b) => b.qty - a.qty) }))
+          .sort((a, b) => b.net - a.net);
+        return json({ from, to, days: dates.length - pending, pending, orders, totalQty, totalNet, surchargeGross,
+          extras: Object.entries(extras).map(([name, gross]) => ({ name, gross })), categories });
+      } catch (e) {
+        const denied = e && (e.status === 401 || e.status === 403);
+        return json({ error: denied ? 'Square wouldn\'t share item details. The Square access token needs "Orders (read)" and "Items (read)" permission.' : String(e && e.message || e) });
+      }
+    }
     if (path === '/api/square-breakdown') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       const date = url.searchParams.get('date');
