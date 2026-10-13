@@ -305,7 +305,13 @@ function renderBreakdown(data){
   const totalGross = data.categories.reduce((a,c)=>a+g(c),0) + surcharge;
   const head = '<div class="dhead">'+qty(data.totalQty)+' items sold · '+money(totalGross)+' (incl. GST, after discounts) — tap a category for the items</div>';
   return head + data.categories.map(c=>
-    '<div class="prow crow"><span><span class="chev">▸</span>'+escHtml(catLabel(c.name))+'</span><span>'+qty(c.qty)+' sold</span><span>'+money(g(c))+'</span></div>'+
+    // Cookies/donuts: "sold" is the real number of cookies/donuts (singles + everything inside boxes), with the
+    // number of boxes shown beside the name. Other categories show the till's item count as before.
+    (()=>{ const hasF = c.flavours && c.flavours.length;
+      const units = hasF ? c.flavours.reduce((a,f)=>a+(f.qty||0),0) : c.qty;
+      const nBoxes = hasF && c.boxes ? c.boxes.reduce((a,x)=>a+(x.qty||0),0) : 0;
+      const label = escHtml(catLabel(c.name)) + (nBoxes ? ' <span style="color:var(--muted);font-size:12px">· '+qty(nBoxes)+' box'+(nBoxes===1?'':'es')+'</span>' : '');
+      return '<div class="prow crow"><span><span class="chev">▸</span>'+label+'</span><span>'+qty(units)+' sold</span><span>'+money(g(c))+'</span></div>'; })()+
     '<div class="citems">'+(
       // Cookies/donuts: one line per flavour, counting singles and the flavours inside boxes (from the till
       // modifiers) together, then how many boxes were sold. Other categories list their items as before.
