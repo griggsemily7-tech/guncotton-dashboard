@@ -600,11 +600,19 @@ async function squareBreakdown(env, date, hour) {
         else if (size && sum(one) < size && Object.keys(one).length === 1) {              // one flavour pressed → the whole box
           const only = Object.keys(one)[0]; counts = { [only]: size };
         }
+        else if (size && sum(one) < size && Object.keys(one).length > 1 && size % Object.keys(one).length === 0
+                 && Object.values(one).every((n) => n === 1)) {
+          // Two flavours pressed once each in a 4 box (no note) = 2 of each; three in a 6 box = 2 of each.
+          const each = size / Object.keys(one).length; counts = {};
+          Object.keys(one).forEach((f) => { counts[f] = each; });
+        }
         // Anything still not accounted for goes under "Not specified", with the note kept so it can be checked.
         const short = size ? size - sum(counts) : 0;
         if (short > 0) {
-          counts = { ...counts, 'Not specified': (counts['Not specified'] || 0) + short };
-          c.unclear.push({ item: itemName, note, picked: Object.keys(one).join(', ') || 'nothing', missing: short * qty });
+          // Nothing picked at all is a till mistake (staff should always pick the flavours), so it's labelled as such.
+          const label = sum(one) === 0 && !note ? 'No flavours picked on till' : 'Not specified';
+          counts = { ...counts, [label]: (counts[label] || 0) + short };
+          c.unclear.push({ item: itemName, note, picked: Object.keys(one).join(', ') || 'nothing', missing: short * qty, nonePicked: label !== 'Not specified' });
         }
         Object.entries(counts).forEach(([f, n]) => { c.flavours[f] = (c.flavours[f] || 0) + n * qty; });
       } else {
@@ -1102,7 +1110,7 @@ export default {
       try {
         const today = toBrisbane(new Date()).dateStr;
         const dates = listDates(from, to).filter((d) => d <= today).slice(0, 31);
-        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd13:' + d) : null)));
+        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd14:' + d) : null)));
         let budget = 4, pending = 0, orders = 0, totalQty = 0, totalNet = 0, surchargeGross = 0;
         const cats = {}, extras = {};
         for (let i = 0; i < dates.length; i++) {
@@ -1111,7 +1119,7 @@ export default {
           if (!b) {
             if (d < today && budget <= 0) { pending++; continue; }
             b = await squareBreakdown(env, d, null);
-            if (d < today) { await env.TOKENS.put('sqbd13:' + d, JSON.stringify(b)); budget--; }
+            if (d < today) { await env.TOKENS.put('sqbd14:' + d, JSON.stringify(b)); budget--; }
           }
           orders += b.orders || 0; totalQty += b.totalQty || 0; totalNet += b.totalNet || 0; surchargeGross += b.surchargeGross || 0;
           (b.extras || []).forEach((x) => { extras[x.name] = (extras[x.name] || 0) + (x.gross || 0); });
