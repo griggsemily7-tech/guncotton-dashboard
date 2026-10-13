@@ -541,7 +541,8 @@ async function squareBreakdown(env, date, hour) {
           const f = cleanFlavour(m.name);
           c.flavours[f] = (c.flavours[f] || 0) + (parseFloat(m.quantity) || 1) * qty;
         });
-        else if (per >= 2 && nBox[2] && !/^\s*box\s*$/i.test(nBox[2])) {
+        else if (per >= 2 && nBox[2] && !/^\s*(box|mix(ed)?|assorted)\s*$/i.test(nBox[2])) {
+          // ("4 Mix" / "6 Mix" are mixed boxes: their flavours come from the modifiers above, never "Mix" itself.)
           // A box written as "4 Cinn" / "6 Cinn" (no modifiers) is that many of one flavour.
           const f = cleanFlavour(nBox[2]); c.flavours[f] = (c.flavours[f] || 0) + per * qty;
         }
@@ -991,7 +992,7 @@ export default {
       try {
         const today = toBrisbane(new Date()).dateStr;
         const dates = listDates(from, to).filter((d) => d <= today).slice(0, 31);
-        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd6:' + d) : null)));
+        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd7:' + d) : null)));
         let budget = 4, pending = 0, orders = 0, totalQty = 0, totalNet = 0, surchargeGross = 0;
         const cats = {}, extras = {};
         for (let i = 0; i < dates.length; i++) {
@@ -1000,7 +1001,7 @@ export default {
           if (!b) {
             if (d < today && budget <= 0) { pending++; continue; }
             b = await squareBreakdown(env, d, null);
-            if (d < today) { await env.TOKENS.put('sqbd6:' + d, JSON.stringify(b)); budget--; }
+            if (d < today) { await env.TOKENS.put('sqbd7:' + d, JSON.stringify(b)); budget--; }
           }
           orders += b.orders || 0; totalQty += b.totalQty || 0; totalNet += b.totalNet || 0; surchargeGross += b.surchargeGross || 0;
           (b.extras || []).forEach((x) => { extras[x.name] = (extras[x.name] || 0) + (x.gross || 0); });
