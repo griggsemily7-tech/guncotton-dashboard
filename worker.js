@@ -523,10 +523,13 @@ async function squareBreakdown(env, date, hour) {
     const meta = li.catalog_object_id ? catMap[li.catalog_object_id] : null;
     const catName = meta ? meta.category : 'Uncategorised';
     const itemName = li.name || (meta && meta.item) || 'Item';
-    const c = cats[catName] || (cats[catName] = { name: catName, qty: 0, net: 0, gross: 0, items: {}, flavours: {} });
+    const c = cats[catName] || (cats[catName] = { name: catName, qty: 0, net: 0, gross: 0, items: {}, flavours: {}, boxes: {} });
     c.qty += qty; c.net += cents / 100; c.gross += itemCents / 100;
     if (flavourKind(catName) || flavourKind(itemName)) {
-      const mods = (li.modifiers || []).filter((m) => m && m.name);
+      // "Warm" is a serving option, not a flavour, so it's left out of the flavour counts.
+      const mods = (li.modifiers || []).filter((m) => m && m.name && !/^\s*warm(ed)?\s*$/i.test(m.name));
+      const isBox = mods.length > 0 || /\bbox\b/i.test(itemName);
+      if (isBox) c.boxes[itemName] = (c.boxes[itemName] || 0) + qty;
       if (mods.length) mods.forEach((m) => {
         const f = cleanFlavour(m.name);
         c.flavours[f] = (c.flavours[f] || 0) + (parseFloat(m.quantity) || 1) * qty;
@@ -549,7 +552,8 @@ async function squareBreakdown(env, date, hour) {
   if (surchargeCents - namedCents > 1) extras.push({ name: 'Other (no name in Square)', gross: (surchargeCents - namedCents) / 100 });
   const categories = Object.values(cats)
     .map((c) => ({ name: c.name, qty: c.qty, net: c.net, gross: c.gross, items: Object.values(c.items).sort((a, b) => b.qty - a.qty),
-      flavours: Object.entries(c.flavours).map(([name, qty]) => ({ name, qty })).sort((a, b) => b.qty - a.qty) }))
+      flavours: Object.entries(c.flavours).map(([name, qty]) => ({ name, qty })).sort((a, b) => b.qty - a.qty),
+      boxes: Object.entries(c.boxes).map(([name, qty]) => ({ name, qty })).sort((a, b) => b.qty - a.qty) }))
     .sort((a, b) => b.net - a.net);
   return { date, hour: hour == null ? null : hour, orders: orders.length, totalQty, totalNet: totalCents / 100, surchargeGross: surchargeCents / 100, extras, categories };
 }
@@ -974,7 +978,7 @@ export default {
       try {
         const today = toBrisbane(new Date()).dateStr;
         const dates = listDates(from, to).filter((d) => d <= today).slice(0, 31);
-        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd3:' + d) : null)));
+        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd4:' + d) : null)));
         let budget = 4, pending = 0, orders = 0, totalQty = 0, totalNet = 0, surchargeGross = 0;
         const cats = {}, extras = {};
         for (let i = 0; i < dates.length; i++) {
@@ -983,14 +987,15 @@ export default {
           if (!b) {
             if (d < today && budget <= 0) { pending++; continue; }
             b = await squareBreakdown(env, d, null);
-            if (d < today) { await env.TOKENS.put('sqbd3:' + d, JSON.stringify(b)); budget--; }
+            if (d < today) { await env.TOKENS.put('sqbd4:' + d, JSON.stringify(b)); budget--; }
           }
           orders += b.orders || 0; totalQty += b.totalQty || 0; totalNet += b.totalNet || 0; surchargeGross += b.surchargeGross || 0;
           (b.extras || []).forEach((x) => { extras[x.name] = (extras[x.name] || 0) + (x.gross || 0); });
           (b.categories || []).forEach((c) => {
-            const cc = cats[c.name] || (cats[c.name] = { name: c.name, qty: 0, net: 0, gross: 0, items: {}, flavours: {} });
+            const cc = cats[c.name] || (cats[c.name] = { name: c.name, qty: 0, net: 0, gross: 0, items: {}, flavours: {}, boxes: {} });
             cc.qty += c.qty || 0; cc.net += c.net || 0; cc.gross += c.gross || 0;
             (c.flavours || []).forEach((f) => { cc.flavours[f.name] = (cc.flavours[f.name] || 0) + (f.qty || 0); });
+            (c.boxes || []).forEach((f) => { cc.boxes[f.name] = (cc.boxes[f.name] || 0) + (f.qty || 0); });
             (c.items || []).forEach((it) => {
               const ii = cc.items[it.name] || (cc.items[it.name] = { name: it.name, qty: 0, net: 0, gross: 0 });
               ii.qty += it.qty || 0; ii.net += it.net || 0; ii.gross += it.gross || 0;
@@ -999,7 +1004,8 @@ export default {
         }
         const categories = Object.values(cats)
           .map((c) => ({ ...c, items: Object.values(c.items).sort((a, b) => b.qty - a.qty),
-            flavours: Object.entries(c.flavours).map(([name, qty]) => ({ name, qty })).sort((a, b) => b.qty - a.qty) }))
+            flavours: Object.entries(c.flavours).map(([name, qty]) => ({ name, qty })).sort((a, b) => b.qty - a.qty),
+            boxes: Object.entries(c.boxes).map(([name, qty]) => ({ name, qty })).sort((a, b) => b.qty - a.qty) }))
           .sort((a, b) => b.net - a.net);
         return json({ from, to, days: dates.length - pending, pending, orders, totalQty, totalNet, surchargeGross,
           extras: Object.entries(extras).map(([name, gross]) => ({ name, gross })), categories });
