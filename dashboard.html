@@ -51,7 +51,10 @@
   .glegend b{font-weight:600}
   @media(max-width:600px){.grow{grid-template-columns:minmax(0,1fr) 72px 104px;font-size:13px}}
   .drill{cursor:pointer;border-radius:6px}
-  .drill:hover{background:rgba(255,255,255,.04)}
+  /* Hover highlight on every table-style row, so it's easy to read across one line */
+  .prow,.drow,.grow{border-radius:6px;transition:background-color .08s}
+  .prow:hover,.drow:hover,.grow:hover,.drill:hover{background:rgba(255,255,255,.08)}
+  .prow:hover span,.drow:hover span{color:var(--text,#f3f4f6)}
   .drill.open{background:rgba(59,130,246,.10)}
   .chev{display:inline-block;width:14px;color:var(--muted);font-size:11px}
   .detail{background:rgba(0,0,0,.18);border-radius:8px;padding:6px 12px;margin:2px 0 10px}
