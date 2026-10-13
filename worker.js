@@ -513,7 +513,22 @@ async function squareBreakdown(env, date, hour) {
     b: 'Biscoff', n: 'Nutella', sc: 'Salted Caramel', o: 'Oreo', ch: 'Choc Sprinkles', c: 'Cinnamon',
     'r-b': 'Rainbow Sprinkles', 'r-n': 'Rainbow Sprinkles', rb: 'Rainbow Sprinkles', rn: 'Rainbow Sprinkles', r: 'Rainbow Sprinkles'
   };
-  const noteFlavour = (code) => NOTE_CODES[String(code).toLowerCase().replace(/\s+/g, '')] || null;
+  // One spelling per flavour across the whole report, whatever the capitals ("choc sprinkles" = "Choc Sprinkles").
+  const canonNames = {};
+  Object.values(NOTE_CODES).forEach((n) => { canonNames[n.toLowerCase()] = n; });
+  const canon = (f) => { const k = String(f).toLowerCase().replace(/\s+/g, ' ').trim(); return canonNames[k] || (canonNames[k] = f); };
+  // A note word → flavour: a code ("b", "r-n"), or the start of a flavour's words ("choc sprink" → Choc Sprinkles).
+  const noteFlavour = (text, picked) => {
+    const t = String(text).toLowerCase().trim();
+    const tryCode = (x) => NOTE_CODES[x.replace(/\s+/g, '')] || null;
+    const first = t.split(/[\s,]+/)[0] || '';
+    const byCode = tryCode(t) || tryCode(first);
+    if (byCode) return byCode;
+    const words = t.replace(/-/g, ' ').split(/\s+/).filter(Boolean);
+    const names = [...new Set([...(picked || []), ...Object.values(NOTE_CODES)])];
+    const hit = names.find((n) => { const nw = n.toLowerCase().split(/\s+/); return words.length <= nw.length && words.every((w, i) => nw[i].startsWith(w)); });
+    return hit ? canon(hit) : null;
+  };
   const cleanFlavour = (name) => {
     const t = String(name || '').replace(/\b(cookies?|donuts?|doughnuts?)\b/ig, ' ').replace(/[\s\-–:·]+/g, ' ').trim();
     // Till shorthand: "Cinn" is the cinnamon donut, so it groups with "Cinnamon".
@@ -551,7 +566,7 @@ async function squareBreakdown(env, date, hour) {
         const sizeM = itemName.match(/(\d{1,2})/);
         const size = sizeM ? parseInt(sizeM[1], 10) : 0;
         const one = {};   // flavours in ONE box
-        const add = (f, n) => { one[f] = (one[f] || 0) + n; };
+        const add = (f, n) => { f = canon(f); one[f] = (one[f] || 0) + n; };
         mods.forEach((m) => {
           // A "2x Biscoff" / "2x Rainbow Nutella" button means two of that flavour in the box.
           const mx = String(m.name).match(/^\s*(\d+)\s*x\s*(.+)$/i);
@@ -561,12 +576,12 @@ async function squareBreakdown(env, date, hour) {
           // A box written as "4 Cinn" / "6 Cinn" (no modifiers) is that many of one flavour.
           add(cleanFlavour(nBox[2]), per);
         }
-        // Notes typed on the till, e.g. "4b" = 4 Biscoff, used when a box is all one flavour.
+        // Notes typed on the till: codes ("4b", "2r-n", "3o") or words ("4 choc sprink"), read per number.
         const note = String(li.note || '').trim();
         const fromNote = {}; let noteUnknown = false;
-        (note.match(/(\d+)\s*x?\s*([a-z]+(?:\s*-\s*[a-z]+)?)/ig) || []).forEach((tok) => {
-          const mm = tok.match(/(\d+)\s*x?\s*([a-z]+(?:\s*-\s*[a-z]+)?)/i);
-          const flav = noteFlavour(mm[2]);
+        (note.match(/(\d+)\s*x?\s*([a-z][a-z\s\-]*)/ig) || []).forEach((tok) => {
+          const mm = tok.match(/(\d+)\s*x?\s*([a-z][a-z\s\-]*)/i);
+          const flav = noteFlavour(mm[2], Object.keys(one));
           if (flav) fromNote[flav] = (fromNote[flav] || 0) + parseInt(mm[1], 10); else noteUnknown = true;
         });
         const sum = (o) => Object.values(o).reduce((a, b) => a + b, 0);
@@ -576,7 +591,12 @@ async function squareBreakdown(env, date, hour) {
         const combined = { ...one };
         Object.entries(fromNote).forEach(([f, n]) => { combined[f] = Math.max(combined[f] || 0, n); });
         if (size && sum(fromNote) === size && !noteUnknown) counts = fromNote;           // the note spells out the whole box
-        else if (size && Object.keys(fromNote).length && sum(combined) === size) counts = combined;
+        else if (size && Object.keys(fromNote).length) {
+          counts = combined;
+          // Still short? The flavour the note talks about makes up the rest (6 Mix: Cinnamon + "4 choc sprink" = 1 + 5).
+          const noteFlavs = Object.keys(fromNote);
+          if (sum(counts) < size && noteFlavs.length === 1) counts = { ...counts, [noteFlavs[0]]: counts[noteFlavs[0]] + (size - sum(counts)) };
+        }
         else if (size && sum(one) < size && Object.keys(one).length === 1) {              // one flavour pressed → the whole box
           const only = Object.keys(one)[0]; counts = { [only]: size };
         }
@@ -588,7 +608,7 @@ async function squareBreakdown(env, date, hour) {
         }
         Object.entries(counts).forEach(([f, n]) => { c.flavours[f] = (c.flavours[f] || 0) + n * qty; });
       } else {
-        const f = cleanFlavour(itemName); c.flavours[f] = (c.flavours[f] || 0) + qty;
+        const f = canon(cleanFlavour(itemName)); c.flavours[f] = (c.flavours[f] || 0) + qty;
       }
     }
     const it = c.items[itemName] || (c.items[itemName] = { name: itemName, qty: 0, net: 0, gross: 0 });
@@ -1082,7 +1102,7 @@ export default {
       try {
         const today = toBrisbane(new Date()).dateStr;
         const dates = listDates(from, to).filter((d) => d <= today).slice(0, 31);
-        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd12:' + d) : null)));
+        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd13:' + d) : null)));
         let budget = 4, pending = 0, orders = 0, totalQty = 0, totalNet = 0, surchargeGross = 0;
         const cats = {}, extras = {};
         for (let i = 0; i < dates.length; i++) {
@@ -1091,7 +1111,7 @@ export default {
           if (!b) {
             if (d < today && budget <= 0) { pending++; continue; }
             b = await squareBreakdown(env, d, null);
-            if (d < today) { await env.TOKENS.put('sqbd12:' + d, JSON.stringify(b)); budget--; }
+            if (d < today) { await env.TOKENS.put('sqbd13:' + d, JSON.stringify(b)); budget--; }
           }
           orders += b.orders || 0; totalQty += b.totalQty || 0; totalNet += b.totalNet || 0; surchargeGross += b.surchargeGross || 0;
           (b.extras || []).forEach((x) => { extras[x.name] = (extras[x.name] || 0) + (x.gross || 0); });
