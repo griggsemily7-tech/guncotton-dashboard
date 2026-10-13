@@ -511,6 +511,9 @@ async function squareBreakdown(env, date, hour) {
   const cleanFlavour = (name) => {
     const t = String(name || '').replace(/\b(cookies?|donuts?|doughnuts?)\b/ig, ' ').replace(/[\s\-–:·]+/g, ' ').trim();
     // Till shorthand: "Cinn" is the cinnamon donut, so it groups with "Cinnamon".
+    // Every rainbow option ("Rainbow Biscoff", "Rainbow Nutella", the single Rainbow Sprinkles donut) is the
+    // same rainbow donut, just with a different sauce base, so they all count as "Rainbow Sprinkles".
+    if (/rainbow/i.test(t)) return 'Rainbow Sprinkles';
     return (t || String(name || 'Unknown')).replace(/\bcinn\b/i, 'Cinnamon');
   };
   for (const li of lines) {
@@ -539,8 +542,11 @@ async function squareBreakdown(env, date, hour) {
       if (isBox) {
         c.boxes[itemName] = (c.boxes[itemName] || 0) + qty;
         if (mods.length) mods.forEach((m) => {
-          const f = cleanFlavour(m.name);
-          c.flavours[f] = (c.flavours[f] || 0) + (parseFloat(m.quantity) || 1) * qty;
+          // A "2x Biscoff" / "2x Rainbow Nutella" button means two of that flavour in the box.
+          const mx = String(m.name).match(/^\s*(\d+)\s*x\s*(.+)$/i);
+          const mult = mx ? parseInt(mx[1], 10) : 1;
+          const f = cleanFlavour(mx ? mx[2] : m.name);
+          c.flavours[f] = (c.flavours[f] || 0) + mult * (parseFloat(m.quantity) || 1) * qty;
         });
         else if (per >= 2 && nBox[2] && !/^\s*(box|mix(ed)?|assorted)\s*$/i.test(nBox[2])) {
           // ("4 Mix" / "6 Mix" are mixed boxes: their flavours come from the modifiers above, never "Mix" itself.)
@@ -993,7 +999,7 @@ export default {
       try {
         const today = toBrisbane(new Date()).dateStr;
         const dates = listDates(from, to).filter((d) => d <= today).slice(0, 31);
-        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd8:' + d) : null)));
+        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd9:' + d) : null)));
         let budget = 4, pending = 0, orders = 0, totalQty = 0, totalNet = 0, surchargeGross = 0;
         const cats = {}, extras = {};
         for (let i = 0; i < dates.length; i++) {
@@ -1002,7 +1008,7 @@ export default {
           if (!b) {
             if (d < today && budget <= 0) { pending++; continue; }
             b = await squareBreakdown(env, d, null);
-            if (d < today) { await env.TOKENS.put('sqbd8:' + d, JSON.stringify(b)); budget--; }
+            if (d < today) { await env.TOKENS.put('sqbd9:' + d, JSON.stringify(b)); budget--; }
           }
           orders += b.orders || 0; totalQty += b.totalQty || 0; totalNet += b.totalNet || 0; surchargeGross += b.surchargeGross || 0;
           (b.extras || []).forEach((x) => { extras[x.name] = (extras[x.name] || 0) + (x.gross || 0); });
