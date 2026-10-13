@@ -571,7 +571,12 @@ async function squareBreakdown(env, date, hour) {
         });
         const sum = (o) => Object.values(o).reduce((a, b) => a + b, 0);
         let counts = one;
+        // The note can also just say how many of one picked flavour there were: picked Cinnamon, Nutella and
+        // Salted Caramel with a note "4c" in a 6 box = 4 Cinnamon + 1 Nutella + 1 Salted Caramel.
+        const combined = { ...one };
+        Object.entries(fromNote).forEach(([f, n]) => { combined[f] = Math.max(combined[f] || 0, n); });
         if (size && sum(fromNote) === size && !noteUnknown) counts = fromNote;           // the note spells out the whole box
+        else if (size && Object.keys(fromNote).length && sum(combined) === size) counts = combined;
         else if (size && sum(one) < size && Object.keys(one).length === 1) {              // one flavour pressed → the whole box
           const only = Object.keys(one)[0]; counts = { [only]: size };
         }
@@ -1029,7 +1034,7 @@ export default {
       try {
         const today = toBrisbane(new Date()).dateStr;
         const dates = listDates(from, to).filter((d) => d <= today).slice(0, 31);
-        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd11:' + d) : null)));
+        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd12:' + d) : null)));
         let budget = 4, pending = 0, orders = 0, totalQty = 0, totalNet = 0, surchargeGross = 0;
         const cats = {}, extras = {};
         for (let i = 0; i < dates.length; i++) {
@@ -1038,7 +1043,7 @@ export default {
           if (!b) {
             if (d < today && budget <= 0) { pending++; continue; }
             b = await squareBreakdown(env, d, null);
-            if (d < today) { await env.TOKENS.put('sqbd11:' + d, JSON.stringify(b)); budget--; }
+            if (d < today) { await env.TOKENS.put('sqbd12:' + d, JSON.stringify(b)); budget--; }
           }
           orders += b.orders || 0; totalQty += b.totalQty || 0; totalNet += b.totalNet || 0; surchargeGross += b.surchargeGross || 0;
           (b.extras || []).forEach((x) => { extras[x.name] = (extras[x.name] || 0) + (x.gross || 0); });
