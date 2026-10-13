@@ -547,8 +547,10 @@ async function squareBreakdown(env, date, hour) {
     const qty = parseFloat(li.quantity) || 0;
     const cents = ((li.total_money && li.total_money.amount) || 0) - ((li.total_tax_money && li.total_tax_money.amount) || 0);
     const meta = li.catalog_object_id ? catMap[li.catalog_object_id] : null;
-    const catName = meta ? meta.category : 'Uncategorised';
     const itemName = li.name || (meta && meta.item) || 'Item';
+    let catName = meta ? meta.category : 'Uncategorised';
+    // Coffee pods belong with Retail, not Retail Coffee (the bags), even though Square files them under Retail Coffee.
+    if (/\bpods?\b/i.test(itemName)) catName = 'Retail';
     const c = cats[catName] || (cats[catName] = { name: catName, qty: 0, net: 0, gross: 0, items: {}, flavours: {}, boxes: {}, unclear: [] });
     c.qty += qty; c.net += cents / 100; c.gross += itemCents / 100;
     if (flavourKind(catName) || flavourKind(itemName)) {
@@ -658,7 +660,7 @@ async function squareCategoryDays(env, from, to, budget) {
   budget = budget || { left: 4 };
   const today = toBrisbane(new Date()).dateStr;
   const dates = listDates(from, to).filter((d) => d <= today);
-  const cachedVals = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqgoal5:' + d) : null)));
+  const cachedVals = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqgoal6:' + d) : null)));
   const days = [];
   let pending = 0;
   for (let i = 0; i < dates.length; i++) {
@@ -670,7 +672,7 @@ async function squareCategoryDays(env, from, to, budget) {
       rec = { cats: {} };
       b.categories.forEach((c) => { rec.cats[c.name] = { qty: c.qty, gross: c.gross }; });
       if (b.surchargeGross > 0.005) rec.cats['Surcharges'] = { qty: 0, gross: b.surchargeGross };
-      if (d < today) { await env.TOKENS.put('sqgoal5:' + d, JSON.stringify(rec)); budget.left--; }
+      if (d < today) { await env.TOKENS.put('sqgoal6:' + d, JSON.stringify(rec)); budget.left--; }
     }
     days.push({ date: d, cats: rec.cats });
   }
@@ -1119,7 +1121,7 @@ export default {
       try {
         const today = toBrisbane(new Date()).dateStr;
         const dates = listDates(from, to).filter((d) => d <= today).slice(0, 31);
-        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd15:' + d) : null)));
+        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd16:' + d) : null)));
         let budget = 4, pending = 0, orders = 0, totalQty = 0, totalNet = 0, surchargeGross = 0;
         const cats = {}, extras = {}, discs = {};
         for (let i = 0; i < dates.length; i++) {
@@ -1128,7 +1130,7 @@ export default {
           if (!b) {
             if (d < today && budget <= 0) { pending++; continue; }
             b = await squareBreakdown(env, d, null);
-            if (d < today) { await env.TOKENS.put('sqbd15:' + d, JSON.stringify(b)); budget--; }
+            if (d < today) { await env.TOKENS.put('sqbd16:' + d, JSON.stringify(b)); budget--; }
           }
           orders += b.orders || 0; totalQty += b.totalQty || 0; totalNet += b.totalNet || 0; surchargeGross += b.surchargeGross || 0;
           (b.extras || []).forEach((x) => { extras[x.name] = (extras[x.name] || 0) + (x.gross || 0); });
