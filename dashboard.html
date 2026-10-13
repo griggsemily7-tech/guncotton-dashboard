@@ -281,6 +281,19 @@ function setPanel(el, html){
   });
 }
 
+// Group flavours that are really the same: ignore capitals, spacing, punctuation and plurals ("Nutella" = "nutella"),
+// and fold a longer name into a shorter one when it contains all of the shorter one's words ("Nutella stuffed" → "Nutella").
+function mergeFlavours(list){
+  const words = (n)=> String(n).toLowerCase().replace(/[^a-z0-9]+/g,' ').trim().split(' ').filter(Boolean).map(w=> w.length>3 ? w.replace(/s$/,'') : w);
+  const groups = [];
+  [...list].sort((a,b)=> words(a.name).length - words(b.name).length || b.qty - a.qty).forEach(f=>{
+    const w = words(f.name);
+    const g = groups.find(x=> x.words.length && x.words.every(k=> w.includes(k)));
+    if(g){ g.qty += f.qty; } else groups.push({name: f.name, words: w, qty: f.qty});
+  });
+  return groups.map(g=>({name: g.name, qty: g.qty})).sort((a,b)=> b.qty - a.qty);
+}
+
 function renderBreakdown(data){
   if(data.error) return '<div class="dnote">'+escHtml(data.error)+'</div>';
   if(!data.categories || !data.categories.length) return '<div class="dnote">No item sales found for this time.</div>';
@@ -297,7 +310,7 @@ function renderBreakdown(data){
       // Cookies/donuts: one line per flavour, counting singles and the flavours inside boxes (from the till
       // modifiers) together, then how many boxes were sold. Other categories list their items as before.
       (c.flavours && c.flavours.length)
-        ? c.flavours.map(f=>'<div class="prow"><span>'+escHtml(f.name)+'</span><span>'+qty(f.qty)+'</span><span></span></div>').join('')+
+        ? mergeFlavours(c.flavours).map(f=>'<div class="prow"><span>'+escHtml(f.name)+'</span><span>'+qty(f.qty)+'</span><span></span></div>').join('')+
           ((c.boxes && c.boxes.length) ? '<div class="fhead">Boxes sold</div>'+
             c.boxes.map(x=>'<div class="prow"><span>'+escHtml(x.name)+'</span><span>'+qty(x.qty)+'</span><span></span></div>').join('') : '')
         : c.items.map(i=>'<div class="prow"><span>'+escHtml(i.name)+'</span><span>'+qty(i.qty)+'</span><span>'+money(g(i))+'</span></div>').join('')
