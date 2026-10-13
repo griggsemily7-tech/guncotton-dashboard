@@ -509,8 +509,11 @@ async function squareBreakdown(env, date, hour) {
   // modifiers on the till, and single items count as their own flavour, so each flavour's total includes both.
   const flavourKind = (s) => /cookie/i.test(s) ? 'cookie' : /donut|doughnut/i.test(s) ? 'donut' : null;
   // Letters typed in till notes → flavour. Add a code here when a new one is used.
-  const NOTE_CODES = { b: 'Biscoff' };
-  const noteFlavour = (code) => NOTE_CODES[String(code).toLowerCase()] || null;
+  const NOTE_CODES = {
+    b: 'Biscoff', n: 'Nutella', sc: 'Salted Caramel', o: 'Oreo', ch: 'Choc Sprinkles', c: 'Cinnamon',
+    'r-b': 'Rainbow Sprinkles', 'r-n': 'Rainbow Sprinkles', rb: 'Rainbow Sprinkles', rn: 'Rainbow Sprinkles', r: 'Rainbow Sprinkles'
+  };
+  const noteFlavour = (code) => NOTE_CODES[String(code).toLowerCase().replace(/\s+/g, '')] || null;
   const cleanFlavour = (name) => {
     const t = String(name || '').replace(/\b(cookies?|donuts?|doughnuts?)\b/ig, ' ').replace(/[\s\-–:·]+/g, ' ').trim();
     // Till shorthand: "Cinn" is the cinnamon donut, so it groups with "Cinnamon".
@@ -561,8 +564,8 @@ async function squareBreakdown(env, date, hour) {
         // Notes typed on the till, e.g. "4b" = 4 Biscoff, used when a box is all one flavour.
         const note = String(li.note || '').trim();
         const fromNote = {}; let noteUnknown = false;
-        (note.match(/(\d+)\s*x?\s*([a-z]+)/ig) || []).forEach((tok) => {
-          const mm = tok.match(/(\d+)\s*x?\s*([a-z]+)/i);
+        (note.match(/(\d+)\s*x?\s*([a-z]+(?:\s*-\s*[a-z]+)?)/ig) || []).forEach((tok) => {
+          const mm = tok.match(/(\d+)\s*x?\s*([a-z]+(?:\s*-\s*[a-z]+)?)/i);
           const flav = noteFlavour(mm[2]);
           if (flav) fromNote[flav] = (fromNote[flav] || 0) + parseInt(mm[1], 10); else noteUnknown = true;
         });
@@ -1026,7 +1029,7 @@ export default {
       try {
         const today = toBrisbane(new Date()).dateStr;
         const dates = listDates(from, to).filter((d) => d <= today).slice(0, 31);
-        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd10:' + d) : null)));
+        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd11:' + d) : null)));
         let budget = 4, pending = 0, orders = 0, totalQty = 0, totalNet = 0, surchargeGross = 0;
         const cats = {}, extras = {};
         for (let i = 0; i < dates.length; i++) {
@@ -1035,7 +1038,7 @@ export default {
           if (!b) {
             if (d < today && budget <= 0) { pending++; continue; }
             b = await squareBreakdown(env, d, null);
-            if (d < today) { await env.TOKENS.put('sqbd10:' + d, JSON.stringify(b)); budget--; }
+            if (d < today) { await env.TOKENS.put('sqbd11:' + d, JSON.stringify(b)); budget--; }
           }
           orders += b.orders || 0; totalQty += b.totalQty || 0; totalNet += b.totalNet || 0; surchargeGross += b.surchargeGross || 0;
           (b.extras || []).forEach((x) => { extras[x.name] = (extras[x.name] || 0) + (x.gross || 0); });
