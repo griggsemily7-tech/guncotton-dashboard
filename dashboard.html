@@ -293,11 +293,15 @@ function renderBreakdown(data){
   const head = '<div class="dhead">'+qty(data.totalQty)+' items sold · '+money(totalGross)+' (incl. GST, after discounts) — tap a category for the items</div>';
   return head + data.categories.map(c=>
     '<div class="prow crow"><span><span class="chev">▸</span>'+escHtml(catLabel(c.name))+'</span><span>'+qty(c.qty)+' sold</span><span>'+money(g(c))+'</span></div>'+
-    '<div class="citems">'+c.items.map(i=>'<div class="prow"><span>'+escHtml(i.name)+'</span><span>'+qty(i.qty)+'</span><span>'+money(g(i))+'</span></div>').join('')+
-      // Cookies/donuts: each flavour counted across singles and boxes (box flavours come from the till modifiers)
-      ((c.flavours && c.flavours.length) ? '<div class="fhead">Flavours – singles + boxes</div>'+
-        c.flavours.map(f=>'<div class="prow"><span>'+escHtml(f.name)+'</span><span>'+qty(f.qty)+'</span><span></span></div>').join('') : '')+
-    '</div>'
+    '<div class="citems">'+(
+      // Cookies/donuts: one line per flavour, counting singles and the flavours inside boxes (from the till
+      // modifiers) together, then how many boxes were sold. Other categories list their items as before.
+      (c.flavours && c.flavours.length)
+        ? c.flavours.map(f=>'<div class="prow"><span>'+escHtml(f.name)+'</span><span>'+qty(f.qty)+'</span><span></span></div>').join('')+
+          ((c.boxes && c.boxes.length) ? '<div class="fhead">Boxes sold</div>'+
+            c.boxes.map(x=>'<div class="prow"><span>'+escHtml(x.name)+'</span><span>'+qty(x.qty)+'</span><span></span></div>').join('') : '')
+        : c.items.map(i=>'<div class="prow"><span>'+escHtml(i.name)+'</span><span>'+qty(i.qty)+'</span><span>'+money(g(i))+'</span></div>').join('')
+    )+'</div>'
   ).join('') + (surcharge > 0.005 ? ((data.extras && data.extras.length) ? data.extras : [{name:'Surcharges', gross:surcharge}])
       .filter(x=>Math.abs(x.gross)>0.005)
       .map(x=>'<div class="prow"><span>'+escHtml(x.name)+'</span><span></span><span>'+money(x.gross)+'</span></div>').join('') : '');
