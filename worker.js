@@ -1027,6 +1027,54 @@ export default {
     // What sold across a range of days (e.g. one week), combining each day's category/item breakdown.
     // Finished days never change, so each is worked out once and stored; today is always live. Only a few
     // uncached days are worked out per request, so a long range may report `pending` and fill in on a retry.
+    // One-off, read-only check: finds the day's sales where Square charged more than the items' own prices
+    // and that extra isn't a named service charge (the dashboard's "Other (no name in Square)"), and shows
+    // what Square says about each one so the cause can be identified.
+    if (path === '/api/square-extras') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const date = url.searchParams.get('date') || toBrisbane(new Date()).dateStr;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json({ error: 'bad date' }, 400);
+      try {
+        const amt = (m) => (m && m.amount) || 0;
+        const locationIds = await squareLocationIds(env);
+        const orders = []; let cursor = null, pages = 0;
+        do {
+          const body = { location_ids: locationIds, limit: 500, query: { filter: { state_filter: { states: ['COMPLETED'] }, date_time_filter: { closed_at: { start_at: date + 'T00:00:00+10:00', end_at: date + 'T23:59:59+10:00' } } }, sort: { sort_field: 'CLOSED_AT', sort_order: 'ASC' } } };
+          if (cursor) body.cursor = cursor;
+          const data = await squareApi(env, '/v2/orders/search', 'POST', body);
+          orders.push(...(data.orders || [])); cursor = data.cursor; pages++;
+        } while (cursor && pages < 10);
+        const found = [];
+        let totalExtra = 0, count = 0;
+        for (const o of orders) {
+          let extra = 0;
+          const lines = (o.line_items || []).map((li) => {
+            const item = amt(li.gross_sales_money) ? amt(li.gross_sales_money) - amt(li.total_discount_money) : amt(li.total_money);
+            const x = amt(li.total_money) - item; extra += x;
+            return { name: li.name, variation: li.variation_name || null, qty: li.quantity, extra: x / 100,
+              total: amt(li.total_money) / 100, grossSales: amt(li.gross_sales_money) / 100, discount: amt(li.total_discount_money) / 100,
+              tax: amt(li.total_tax_money) / 100, serviceCharge: amt(li.total_service_charge_money) / 100,
+              modifiers: (li.modifiers || []).map((m) => ({ name: m.name, price: amt(m.total_price_money || m.base_price_money) / 100 })),
+              appliedTaxes: (li.applied_taxes || []).map((t) => ({ uid: t.tax_uid, amount: amt(t.applied_money) / 100 })) };
+          });
+          const named = (o.service_charges || []).reduce((a, sc) => a + amt(sc.total_money || sc.applied_money), 0);
+          const unexplained = extra - named;
+          if (unexplained > 1) {
+            totalExtra += unexplained; count++;
+            if (found.length < 8) found.push({
+              closedAt: o.closed_at, unexplainedExtra: unexplained / 100, orderTotal: amt(o.total_money) / 100,
+              tip: amt(o.total_tip_money) / 100, totalTax: amt(o.total_tax_money) / 100, rounding: amt(o.rounding_adjustment && o.rounding_adjustment.amount_money) / 100,
+              taxes: (o.taxes || []).map((t) => ({ uid: t.uid, name: t.name, type: t.type, percentage: t.percentage, scope: t.scope })),
+              serviceCharges: (o.service_charges || []).map((sc) => ({ name: sc.name, type: sc.type, calculationPhase: sc.calculation_phase, amount: amt(sc.total_money || sc.applied_money) / 100 })),
+              discounts: (o.discounts || []).map((d) => ({ name: d.name, amount: amt(d.applied_money) / 100 })),
+              tenders: (o.tenders || []).map((t) => ({ type: t.type, amount: amt(t.amount_money) / 100, processingFee: (t.processing_fee_money ? amt(t.processing_fee_money) / 100 : null) })),
+              lines: lines.filter((l) => Math.abs(l.extra) > 0.005)
+            });
+          }
+        }
+        return json({ date, orders: orders.length, ordersWithUnexplainedExtra: count, totalUnexplained: totalExtra / 100, examples: found });
+      } catch (e) { return json({ error: String(e && e.message || e) }); }
+    }
     if (path === '/api/square-breakdown-range') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       const from = url.searchParams.get('from'), to = url.searchParams.get('to');
