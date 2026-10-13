@@ -92,7 +92,7 @@
 <div id="bepozHealthBanner"></div>
 
 <div id="view-dashboard">
-  <select id="period" onchange="fetchData()">
+  <select id="period" onchange="onPeriodChange()">
     <option value="today">Today</option>
     <option value="week">This week</option>
     <option value="lastweek">Last week</option>
@@ -100,7 +100,9 @@
     <option value="lastmonth">Last month</option>
     <option value="fy">This financial year</option>
     <option value="lastfy">Last financial year</option>
+    <option value="custom">Pick a day…</option>
   </select>
+  <input type="date" id="customDate" style="display:none;margin-left:8px;padding:4px 6px;border-radius:6px;font:inherit" onchange="if(this.value){localStorage.setItem('vd_customdate',this.value);fetchData();}">
   <div class="cards" id="cards"></div>
   <div id="goalsSection" style="margin-top:20px;display:none">
     <div id="goalsTitle" style="font-size:12px;color:var(--muted);letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px">Sales goals</div>
@@ -180,9 +182,24 @@ let METRICS = METRICS_BY_VENUE[currentVenue];
 function fmtMoney(n){ return n==null ? null : '$'+n.toLocaleString(undefined,{maximumFractionDigits:0}); }
 function fmtPct(n){ return n==null ? null : (n*100).toFixed(1)+'%'; }
 
+// "Pick a day…": any single past day, compared with the same weekday the week before.
+function customDay(){
+  const el = document.getElementById('customDate');
+  const t = new Date(); const today = t.getFullYear()+'-'+String(t.getMonth()+1).padStart(2,'0')+'-'+String(t.getDate()).padStart(2,'0');
+  el.max = today;
+  if(!el.value) el.value = localStorage.getItem('vd_customdate') || today;
+  return el.value > today ? today : el.value;
+}
+function onPeriodChange(){
+  const custom = document.getElementById('period').value === 'custom';
+  document.getElementById('customDate').style.display = custom ? 'inline-block' : 'none';
+  if(custom) customDay();
+  fetchData();
+}
 function rangeFor(period){
   const now = new Date();
   const fmt = d => d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  if(period==='custom'){ const d = customDay(); return {from:d, to:d}; }
   const startOfWeek = (d,offsetWeeks=0) => { const x=new Date(d); const day=(x.getDay()+6)%7; x.setDate(x.getDate()-day+offsetWeeks*7); return x; };
   if(period==='week'){ const s=startOfWeek(now); const e=new Date(s); e.setDate(e.getDate()+6); return {from:fmt(s),to:fmt(e)}; }
   if(period==='lastweek'){ const s=startOfWeek(now,-1); const e=new Date(s); e.setDate(e.getDate()+6); return {from:fmt(s),to:fmt(e)}; }
@@ -194,10 +211,11 @@ function rangeFor(period){
 }
 
 // The immediately-preceding comparable period, used for the "vs last week/month/year" badges on the cards.
-const PREV_LABELS = {today:'vs last week', week:'vs last week (to date)', lastweek:'vs prior week', month:'vs last month (to date)', lastmonth:'vs month before', fy:'vs last year (to date)', lastfy:'vs year before'};
+const PREV_LABELS = {custom:'vs same day the week before', today:'vs last week', week:'vs last week (to date)', lastweek:'vs prior week', month:'vs last month (to date)', lastmonth:'vs month before', fy:'vs last year (to date)', lastfy:'vs year before'};
 function prevRangeFor(period){
   const now = new Date();
   const fmt = d => d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  if(period==='custom'){ const x = new Date(customDay()+'T00:00:00'); x.setDate(x.getDate()-7); return {from:fmt(x), to:fmt(x)}; }
   const startOfWeek = (d,offsetWeeks=0) => { const x=new Date(d); const day=(x.getDay()+6)%7; x.setDate(x.getDate()-day+offsetWeeks*7); return x; };
   // This week is still running, so compare it with the same days of last week (Mon to the same weekday), not the whole week.
   if(period==='week'){ const s=startOfWeek(now,-1); const e=new Date(now); e.setDate(e.getDate()-7); return {from:fmt(s),to:fmt(e)}; }
@@ -607,7 +625,7 @@ async function fetchCompareChart(myGen, silent, period, r, pr){
   const wrap = document.getElementById('compareWrap');
   const el = document.getElementById('compareChart');
   // A whole financial year is too big to compare day by day, so no chart for those views.
-  if(period==='fy' || period==='lastfy'){ wrap.style.display = 'none'; return; }
+  if(period==='fy' || period==='lastfy' || period==='custom'){ wrap.style.display = 'none'; return; }
   wrap.style.display = 'block';
   if(!silent) el.innerHTML = '<span style="color:var(--muted)">Loading…</span>';
   try{
@@ -884,6 +902,7 @@ async function logout(){ await fetch('/api/logout',{method:'POST'}); location.re
 loadSettings();
 const savedPeriod = localStorage.getItem('vd_period');
 if (savedPeriod) document.getElementById('period').value = savedPeriod;
+if (savedPeriod === 'custom') { document.getElementById('customDate').style.display = 'inline-block'; customDay(); }
 fetchData();
 </script>
 </body>
