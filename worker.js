@@ -534,7 +534,8 @@ async function squareBreakdown(env, date, hour) {
       // donut's Biscoff or Nutella sauce base is a choice on that donut, not extra donuts).
       const nBox = itemName.match(/^\s*(\d{1,2})\s*x?\s+(.+)$/i);
       const per = nBox ? parseInt(nBox[1], 10) : 0;
-      const isBox = /\bbox\b/i.test(itemName) || (per >= 2 && per <= 24);
+      // Mixed boxes count as boxes however they're named on the till ("4 Mix", "Mix 4", "4-Mix", "Mixed box").
+      const isBox = /\b(box|mix|mixed|pack)\b/i.test(itemName) || /\d\s*-?\s*mix/i.test(itemName) || (per >= 2 && per <= 24);
       if (isBox) {
         c.boxes[itemName] = (c.boxes[itemName] || 0) + qty;
         if (mods.length) mods.forEach((m) => {
@@ -992,7 +993,7 @@ export default {
       try {
         const today = toBrisbane(new Date()).dateStr;
         const dates = listDates(from, to).filter((d) => d <= today).slice(0, 31);
-        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd7:' + d) : null)));
+        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd8:' + d) : null)));
         let budget = 4, pending = 0, orders = 0, totalQty = 0, totalNet = 0, surchargeGross = 0;
         const cats = {}, extras = {};
         for (let i = 0; i < dates.length; i++) {
@@ -1001,7 +1002,7 @@ export default {
           if (!b) {
             if (d < today && budget <= 0) { pending++; continue; }
             b = await squareBreakdown(env, d, null);
-            if (d < today) { await env.TOKENS.put('sqbd7:' + d, JSON.stringify(b)); budget--; }
+            if (d < today) { await env.TOKENS.put('sqbd8:' + d, JSON.stringify(b)); budget--; }
           }
           orders += b.orders || 0; totalQty += b.totalQty || 0; totalNet += b.totalNet || 0; surchargeGross += b.surchargeGross || 0;
           (b.extras || []).forEach((x) => { extras[x.name] = (extras[x.name] || 0) + (x.gross || 0); });
