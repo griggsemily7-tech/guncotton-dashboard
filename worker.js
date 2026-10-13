@@ -513,7 +513,6 @@ async function squareBreakdown(env, date, hour) {
     // Till shorthand: "Cinn" is the cinnamon donut, so it groups with "Cinnamon".
     return (t || String(name || 'Unknown')).replace(/\bcinn\b/i, 'Cinnamon');
   };
-  const donutCat = (Object.values(catMap).map((m) => m && m.category).find((n) => n && /donut|doughnut/i.test(n))) || 'Donuts';
   for (const li of lines) {
     // What the item itself sold for, incl. GST, after discounts — excludes surcharges (e.g. public holiday 15%),
     // which Square spreads across the line items. This matches Square's own category report.
@@ -523,29 +522,31 @@ async function squareBreakdown(env, date, hour) {
     const qty = parseFloat(li.quantity) || 0;
     const cents = ((li.total_money && li.total_money.amount) || 0) - ((li.total_tax_money && li.total_tax_money.amount) || 0);
     const meta = li.catalog_object_id ? catMap[li.catalog_object_id] : null;
-    let catName = meta ? meta.category : 'Uncategorised';
-    // Sprinkle donuts sometimes sit outside the Donuts category on the till; count them with the other donuts.
-    if (!flavourKind(catName) && /sprinkle/i.test(li.name || (meta && meta.item) || '')) catName = donutCat;
+    const catName = meta ? meta.category : 'Uncategorised';
     const itemName = li.name || (meta && meta.item) || 'Item';
     const c = cats[catName] || (cats[catName] = { name: catName, qty: 0, net: 0, gross: 0, items: {}, flavours: {}, boxes: {} });
     c.qty += qty; c.net += cents / 100; c.gross += itemCents / 100;
     if (flavourKind(catName) || flavourKind(itemName)) {
       // "Warm" is a serving option, not a flavour, so it's left out of the flavour counts.
       const mods = (li.modifiers || []).filter((m) => m && m.name && !/^\s*warm(ed)?\s*$/i.test(m.name));
-      const isBox = mods.length > 0 || /\bbox\b/i.test(itemName);
-      if (isBox) c.boxes[itemName] = (c.boxes[itemName] || 0) + qty;
-      if (mods.length) mods.forEach((m) => {
-        const f = cleanFlavour(m.name);
-        c.flavours[f] = (c.flavours[f] || 0) + (parseFloat(m.quantity) || 1) * qty;
-      });
-      else {
-        // A box written as "4 Cinn" / "6 Cinn" (no modifiers) is that many of one flavour.
-        const nBox = itemName.match(/^\s*(\d{1,2})\s*x?\s+(.+)$/i);
-        const per = nBox ? parseInt(nBox[1], 10) : 0;
-        if (per >= 2 && per <= 24) {
-          c.boxes[itemName] = (c.boxes[itemName] || 0) + qty;
+      // Only boxes are broken into flavours: items named with "box" or starting with a number ("4 Cinn", "6 Box").
+      // A single donut or cookie counts as its own flavour, even if it has modifiers (e.g. the Rainbow Sprinkles
+      // donut's Biscoff or Nutella sauce base is a choice on that donut, not extra donuts).
+      const nBox = itemName.match(/^\s*(\d{1,2})\s*x?\s+(.+)$/i);
+      const per = nBox ? parseInt(nBox[1], 10) : 0;
+      const isBox = /\bbox\b/i.test(itemName) || (per >= 2 && per <= 24);
+      if (isBox) {
+        c.boxes[itemName] = (c.boxes[itemName] || 0) + qty;
+        if (mods.length) mods.forEach((m) => {
+          const f = cleanFlavour(m.name);
+          c.flavours[f] = (c.flavours[f] || 0) + (parseFloat(m.quantity) || 1) * qty;
+        });
+        else if (per >= 2 && nBox[2] && !/^\s*box\s*$/i.test(nBox[2])) {
+          // A box written as "4 Cinn" / "6 Cinn" (no modifiers) is that many of one flavour.
           const f = cleanFlavour(nBox[2]); c.flavours[f] = (c.flavours[f] || 0) + per * qty;
-        } else { const f = cleanFlavour(itemName); c.flavours[f] = (c.flavours[f] || 0) + qty; }
+        }
+      } else {
+        const f = cleanFlavour(itemName); c.flavours[f] = (c.flavours[f] || 0) + qty;
       }
     }
     const it = c.items[itemName] || (c.items[itemName] = { name: itemName, qty: 0, net: 0, gross: 0 });
@@ -577,7 +578,7 @@ async function squareCategoryDays(env, from, to, budget) {
   budget = budget || { left: 4 };
   const today = toBrisbane(new Date()).dateStr;
   const dates = listDates(from, to).filter((d) => d <= today);
-  const cachedVals = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqgoal3:' + d) : null)));
+  const cachedVals = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqgoal4:' + d) : null)));
   const days = [];
   let pending = 0;
   for (let i = 0; i < dates.length; i++) {
@@ -589,7 +590,7 @@ async function squareCategoryDays(env, from, to, budget) {
       rec = { cats: {} };
       b.categories.forEach((c) => { rec.cats[c.name] = { qty: c.qty, gross: c.gross }; });
       if (b.surchargeGross > 0.005) rec.cats['Surcharges'] = { qty: 0, gross: b.surchargeGross };
-      if (d < today) { await env.TOKENS.put('sqgoal3:' + d, JSON.stringify(rec)); budget.left--; }
+      if (d < today) { await env.TOKENS.put('sqgoal4:' + d, JSON.stringify(rec)); budget.left--; }
     }
     days.push({ date: d, cats: rec.cats });
   }
@@ -990,7 +991,7 @@ export default {
       try {
         const today = toBrisbane(new Date()).dateStr;
         const dates = listDates(from, to).filter((d) => d <= today).slice(0, 31);
-        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd5:' + d) : null)));
+        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd6:' + d) : null)));
         let budget = 4, pending = 0, orders = 0, totalQty = 0, totalNet = 0, surchargeGross = 0;
         const cats = {}, extras = {};
         for (let i = 0; i < dates.length; i++) {
@@ -999,7 +1000,7 @@ export default {
           if (!b) {
             if (d < today && budget <= 0) { pending++; continue; }
             b = await squareBreakdown(env, d, null);
-            if (d < today) { await env.TOKENS.put('sqbd5:' + d, JSON.stringify(b)); budget--; }
+            if (d < today) { await env.TOKENS.put('sqbd6:' + d, JSON.stringify(b)); budget--; }
           }
           orders += b.orders || 0; totalQty += b.totalQty || 0; totalNet += b.totalNet || 0; surchargeGross += b.surchargeGross || 0;
           (b.extras || []).forEach((x) => { extras[x.name] = (extras[x.name] || 0) + (x.gross || 0); });
