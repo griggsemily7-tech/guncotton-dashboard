@@ -321,7 +321,12 @@ function renderBreakdown(data){
       (c.flavours && c.flavours.length)
         ? mergeFlavours(c.flavours).map(f=>'<div class="prow"><span>'+escHtml(f.name)+'</span><span>'+qty(f.qty)+'</span><span></span></div>').join('')+
           ((c.boxes && c.boxes.length) ? '<div class="fhead">Boxes sold</div>'+
-            c.boxes.map(x=>'<div class="prow"><span>'+escHtml(x.name)+'</span><span>'+qty(x.qty)+'</span><span></span></div>').join('') : '')
+            c.boxes.map(x=>'<div class="prow"><span>'+escHtml(x.name)+'</span><span>'+qty(x.qty)+'</span><span></span></div>').join('') : '')+
+          // Boxes where the till didn't say every flavour: shown with their note so the codes can be added.
+          ((c.unclear && c.unclear.length) ? '<div class="fhead">Boxes to check</div>'+
+            c.unclear.slice(0,10).map(u=>'<div class="dnote" style="font-size:12px">'+escHtml(u.item)+' – picked '+escHtml(u.picked)+
+              (u.note ? ' – note “'+escHtml(u.note)+'”' : ' – no note')+' – '+qty(u.missing)+' not specified</div>').join('')+
+            '<div class="dnote" style="font-size:12px">Tell Claude what these notes mean and they\'ll be counted properly.</div>' : '')
         : c.items.map(i=>'<div class="prow"><span>'+escHtml(i.name)+'</span><span>'+qty(i.qty)+'</span><span>'+money(g(i))+'</span></div>').join('')
     )+'</div>'
   ).join('') + (surcharge > 0.005 ? ((data.extras && data.extras.length) ? data.extras : [{name:'Surcharges', gross:surcharge}])
