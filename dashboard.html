@@ -333,7 +333,10 @@ function renderBreakdown(data){
     )+'</div>'
   ).join('') + (surcharge > 0.005 ? ((data.extras && data.extras.length) ? data.extras : [{name:'Surcharges', gross:surcharge}])
       .filter(x=>Math.abs(x.gross)>0.005)
-      .map(x=>'<div class="prow"><span>'+escHtml(x.name)+'</span><span></span><span>'+money(x.gross)+'</span></div>').join('') : '');
+      .map(x=>'<div class="prow"><span>'+escHtml(x.name)+'</span><span></span><span>'+money(x.gross)+'</span></div>').join('') : '')
+    // Discounts are already taken off the sales above; listed so you can see what was given away.
+    + ((data.discounts && data.discounts.length) ? '<div class="fhead">Discounts given (already taken off)</div>'+
+        data.discounts.map(d=>'<div class="prow" style="color:var(--muted)"><span>'+escHtml(d.name)+'</span><span>'+qty(d.count)+'×</span><span>−'+money(d.amount)+'</span></div>').join('') : '');
 }
 
 async function loadDrill(row){
