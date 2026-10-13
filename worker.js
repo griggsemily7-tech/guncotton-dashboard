@@ -539,8 +539,9 @@ async function squareBreakdown(env, date, hour) {
   };
   for (const li of lines) {
     // What the item itself sold for, incl. GST, after discounts — excludes surcharges (e.g. public holiday 15%),
-    // which Square spreads across the line items. This matches Square's own category report.
-    const itemCents = amt(li.gross_sales_money) ? amt(li.gross_sales_money) - amt(li.total_discount_money) : amt(li.total_money);
+    // which Square spreads across the line items. Square's gross_sales_money on these orders is already after
+    // discounts (a $6.50 latte with the 50c Keep cup discount shows 6.00), so the discount isn't taken off again.
+    const itemCents = amt(li.gross_sales_money) || amt(li.total_money);
     const sc = amt(li.total_money) - itemCents;
     if (sc > 0) surchargeCents += sc;
     const qty = parseFloat(li.quantity) || 0;
@@ -633,13 +634,21 @@ async function squareBreakdown(env, date, hour) {
   let namedCents = Object.values(extrasByName).reduce((a, b) => a + b, 0);
   const extras = Object.entries(extrasByName).map(([name, c]) => ({ name, gross: c / 100 }));
   if (surchargeCents - namedCents > 1) extras.push({ name: 'Other (no name in Square)', gross: (surchargeCents - namedCents) / 100 });
+  // Discounts given (Keep cup, Staff half price, bulk coffee…) — already taken off the sales above; listed for info.
+  const discByName = {};
+  orders.forEach((o) => (o.discounts || []).forEach((d) => {
+    const n = String(d.name || 'Discount').trim();
+    const r = discByName[n] || (discByName[n] = { name: n, amount: 0, count: 0 });
+    r.amount += amt(d.applied_money) / 100; r.count += 1;
+  }));
+  const discounts = Object.values(discByName).sort((a, b) => b.amount - a.amount);
   const categories = Object.values(cats)
     .map((c) => ({ name: c.name, qty: c.qty, net: c.net, gross: c.gross, items: Object.values(c.items).sort((a, b) => b.qty - a.qty),
       flavours: Object.entries(c.flavours).map(([name, qty]) => ({ name, qty })).sort((a, b) => b.qty - a.qty),
       boxes: Object.entries(c.boxes).map(([name, qty]) => ({ name, qty })).sort((a, b) => b.qty - a.qty),
       unclear: c.unclear.slice(0, 30) }))
     .sort((a, b) => b.net - a.net);
-  return { date, hour: hour == null ? null : hour, orders: orders.length, totalQty, totalNet: totalCents / 100, surchargeGross: surchargeCents / 100, extras, categories };
+  return { date, hour: hour == null ? null : hour, orders: orders.length, totalQty, totalNet: totalCents / 100, surchargeGross: surchargeCents / 100, extras, discounts, categories };
 }
 
 // Per-day items sold + gross (incl. GST) by Square category — powers the Doughgirlz sales goals panel.
@@ -649,7 +658,7 @@ async function squareCategoryDays(env, from, to, budget) {
   budget = budget || { left: 4 };
   const today = toBrisbane(new Date()).dateStr;
   const dates = listDates(from, to).filter((d) => d <= today);
-  const cachedVals = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqgoal4:' + d) : null)));
+  const cachedVals = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqgoal5:' + d) : null)));
   const days = [];
   let pending = 0;
   for (let i = 0; i < dates.length; i++) {
@@ -661,7 +670,7 @@ async function squareCategoryDays(env, from, to, budget) {
       rec = { cats: {} };
       b.categories.forEach((c) => { rec.cats[c.name] = { qty: c.qty, gross: c.gross }; });
       if (b.surchargeGross > 0.005) rec.cats['Surcharges'] = { qty: 0, gross: b.surchargeGross };
-      if (d < today) { await env.TOKENS.put('sqgoal4:' + d, JSON.stringify(rec)); budget.left--; }
+      if (d < today) { await env.TOKENS.put('sqgoal5:' + d, JSON.stringify(rec)); budget.left--; }
     }
     days.push({ date: d, cats: rec.cats });
   }
@@ -1077,7 +1086,7 @@ export default {
         for (const o of orders) {
           let extra = 0;
           const lines = (o.line_items || []).map((li) => {
-            const item = amt(li.gross_sales_money) ? amt(li.gross_sales_money) - amt(li.total_discount_money) : amt(li.total_money);
+            const item = amt(li.gross_sales_money) || amt(li.total_money);
             const x = amt(li.total_money) - item; extra += x;
             return { name: li.name, variation: li.variation_name || null, qty: li.quantity, extra: x / 100,
               total: amt(li.total_money) / 100, grossSales: amt(li.gross_sales_money) / 100, discount: amt(li.total_discount_money) / 100,
@@ -1110,19 +1119,20 @@ export default {
       try {
         const today = toBrisbane(new Date()).dateStr;
         const dates = listDates(from, to).filter((d) => d <= today).slice(0, 31);
-        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd14:' + d) : null)));
+        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd15:' + d) : null)));
         let budget = 4, pending = 0, orders = 0, totalQty = 0, totalNet = 0, surchargeGross = 0;
-        const cats = {}, extras = {};
+        const cats = {}, extras = {}, discs = {};
         for (let i = 0; i < dates.length; i++) {
           const d = dates[i];
           let b = stored[i] ? JSON.parse(stored[i]) : null;
           if (!b) {
             if (d < today && budget <= 0) { pending++; continue; }
             b = await squareBreakdown(env, d, null);
-            if (d < today) { await env.TOKENS.put('sqbd14:' + d, JSON.stringify(b)); budget--; }
+            if (d < today) { await env.TOKENS.put('sqbd15:' + d, JSON.stringify(b)); budget--; }
           }
           orders += b.orders || 0; totalQty += b.totalQty || 0; totalNet += b.totalNet || 0; surchargeGross += b.surchargeGross || 0;
           (b.extras || []).forEach((x) => { extras[x.name] = (extras[x.name] || 0) + (x.gross || 0); });
+          (b.discounts || []).forEach((x) => { const r = discs[x.name] || (discs[x.name] = { name: x.name, amount: 0, count: 0 }); r.amount += x.amount || 0; r.count += x.count || 0; });
           (b.categories || []).forEach((c) => {
             const cc = cats[c.name] || (cats[c.name] = { name: c.name, qty: 0, net: 0, gross: 0, items: {}, flavours: {}, boxes: {} });
             cc.qty += c.qty || 0; cc.net += c.net || 0; cc.gross += c.gross || 0;
@@ -1142,7 +1152,7 @@ export default {
             unclear: (c.unclear || []).slice(0, 30) }))
           .sort((a, b) => b.net - a.net);
         return json({ from, to, days: dates.length - pending, pending, orders, totalQty, totalNet, surchargeGross,
-          extras: Object.entries(extras).map(([name, gross]) => ({ name, gross })), categories });
+          extras: Object.entries(extras).map(([name, gross]) => ({ name, gross })), discounts: Object.values(discs).sort((a, b) => b.amount - a.amount), categories });
       } catch (e) {
         const denied = e && (e.status === 401 || e.status === 403);
         return json({ error: denied ? 'Square wouldn\'t share item details. The Square access token needs "Orders (read)" and "Items (read)" permission.' : String(e && e.message || e) });
