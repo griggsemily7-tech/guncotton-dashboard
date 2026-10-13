@@ -508,6 +508,9 @@ async function squareBreakdown(env, date, hour) {
   // Flavour counts for cookies and donuts: a box (e.g. "Cookie 4 Box") is broken into the flavours picked as
   // modifiers on the till, and single items count as their own flavour, so each flavour's total includes both.
   const flavourKind = (s) => /cookie/i.test(s) ? 'cookie' : /donut|doughnut/i.test(s) ? 'donut' : null;
+  // Letters typed in till notes → flavour. Add a code here when a new one is used.
+  const NOTE_CODES = { b: 'Biscoff' };
+  const noteFlavour = (code) => NOTE_CODES[String(code).toLowerCase()] || null;
   const cleanFlavour = (name) => {
     const t = String(name || '').replace(/\b(cookies?|donuts?|doughnuts?)\b/ig, ' ').replace(/[\s\-–:·]+/g, ' ').trim();
     // Till shorthand: "Cinn" is the cinnamon donut, so it groups with "Cinnamon".
@@ -527,7 +530,7 @@ async function squareBreakdown(env, date, hour) {
     const meta = li.catalog_object_id ? catMap[li.catalog_object_id] : null;
     const catName = meta ? meta.category : 'Uncategorised';
     const itemName = li.name || (meta && meta.item) || 'Item';
-    const c = cats[catName] || (cats[catName] = { name: catName, qty: 0, net: 0, gross: 0, items: {}, flavours: {}, boxes: {} });
+    const c = cats[catName] || (cats[catName] = { name: catName, qty: 0, net: 0, gross: 0, items: {}, flavours: {}, boxes: {}, unclear: [] });
     c.qty += qty; c.net += cents / 100; c.gross += itemCents / 100;
     if (flavourKind(catName) || flavourKind(itemName)) {
       // "Warm" is a serving option, not a flavour, so it's left out of the flavour counts.
@@ -541,18 +544,41 @@ async function squareBreakdown(env, date, hour) {
       const isBox = /\b(box|mix|mixed|pack)\b/i.test(itemName) || /\d\s*-?\s*mix/i.test(itemName) || (per >= 2 && per <= 24);
       if (isBox) {
         c.boxes[itemName] = (c.boxes[itemName] || 0) + qty;
-        if (mods.length) mods.forEach((m) => {
+        // How many donuts/cookies one box holds: the number in its name ("4 Mix" → 4, "Cookie 6 Box" → 6).
+        const sizeM = itemName.match(/(\d{1,2})/);
+        const size = sizeM ? parseInt(sizeM[1], 10) : 0;
+        const one = {};   // flavours in ONE box
+        const add = (f, n) => { one[f] = (one[f] || 0) + n; };
+        mods.forEach((m) => {
           // A "2x Biscoff" / "2x Rainbow Nutella" button means two of that flavour in the box.
           const mx = String(m.name).match(/^\s*(\d+)\s*x\s*(.+)$/i);
-          const mult = mx ? parseInt(mx[1], 10) : 1;
-          const f = cleanFlavour(mx ? mx[2] : m.name);
-          c.flavours[f] = (c.flavours[f] || 0) + mult * (parseFloat(m.quantity) || 1) * qty;
+          add(cleanFlavour(mx ? mx[2] : m.name), (mx ? parseInt(mx[1], 10) : 1) * (parseFloat(m.quantity) || 1));
         });
-        else if (per >= 2 && nBox[2] && !/^\s*(box|mix(ed)?|assorted)\s*$/i.test(nBox[2])) {
-          // ("4 Mix" / "6 Mix" are mixed boxes: their flavours come from the modifiers above, never "Mix" itself.)
+        if (!mods.length && per >= 2 && nBox[2] && !/^\s*(box|mix(ed)?|assorted)\s*$/i.test(nBox[2])) {
           // A box written as "4 Cinn" / "6 Cinn" (no modifiers) is that many of one flavour.
-          const f = cleanFlavour(nBox[2]); c.flavours[f] = (c.flavours[f] || 0) + per * qty;
+          add(cleanFlavour(nBox[2]), per);
         }
+        // Notes typed on the till, e.g. "4b" = 4 Biscoff, used when a box is all one flavour.
+        const note = String(li.note || '').trim();
+        const fromNote = {}; let noteUnknown = false;
+        (note.match(/(\d+)\s*x?\s*([a-z]+)/ig) || []).forEach((tok) => {
+          const mm = tok.match(/(\d+)\s*x?\s*([a-z]+)/i);
+          const flav = noteFlavour(mm[2]);
+          if (flav) fromNote[flav] = (fromNote[flav] || 0) + parseInt(mm[1], 10); else noteUnknown = true;
+        });
+        const sum = (o) => Object.values(o).reduce((a, b) => a + b, 0);
+        let counts = one;
+        if (size && sum(fromNote) === size && !noteUnknown) counts = fromNote;           // the note spells out the whole box
+        else if (size && sum(one) < size && Object.keys(one).length === 1) {              // one flavour pressed → the whole box
+          const only = Object.keys(one)[0]; counts = { [only]: size };
+        }
+        // Anything still not accounted for goes under "Not specified", with the note kept so it can be checked.
+        const short = size ? size - sum(counts) : 0;
+        if (short > 0) {
+          counts = { ...counts, 'Not specified': (counts['Not specified'] || 0) + short };
+          c.unclear.push({ item: itemName, note, picked: Object.keys(one).join(', ') || 'nothing', missing: short * qty });
+        }
+        Object.entries(counts).forEach(([f, n]) => { c.flavours[f] = (c.flavours[f] || 0) + n * qty; });
       } else {
         const f = cleanFlavour(itemName); c.flavours[f] = (c.flavours[f] || 0) + qty;
       }
@@ -574,7 +600,8 @@ async function squareBreakdown(env, date, hour) {
   const categories = Object.values(cats)
     .map((c) => ({ name: c.name, qty: c.qty, net: c.net, gross: c.gross, items: Object.values(c.items).sort((a, b) => b.qty - a.qty),
       flavours: Object.entries(c.flavours).map(([name, qty]) => ({ name, qty })).sort((a, b) => b.qty - a.qty),
-      boxes: Object.entries(c.boxes).map(([name, qty]) => ({ name, qty })).sort((a, b) => b.qty - a.qty) }))
+      boxes: Object.entries(c.boxes).map(([name, qty]) => ({ name, qty })).sort((a, b) => b.qty - a.qty),
+      unclear: c.unclear.slice(0, 30) }))
     .sort((a, b) => b.net - a.net);
   return { date, hour: hour == null ? null : hour, orders: orders.length, totalQty, totalNet: totalCents / 100, surchargeGross: surchargeCents / 100, extras, categories };
 }
@@ -999,7 +1026,7 @@ export default {
       try {
         const today = toBrisbane(new Date()).dateStr;
         const dates = listDates(from, to).filter((d) => d <= today).slice(0, 31);
-        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd9:' + d) : null)));
+        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd10:' + d) : null)));
         let budget = 4, pending = 0, orders = 0, totalQty = 0, totalNet = 0, surchargeGross = 0;
         const cats = {}, extras = {};
         for (let i = 0; i < dates.length; i++) {
@@ -1008,7 +1035,7 @@ export default {
           if (!b) {
             if (d < today && budget <= 0) { pending++; continue; }
             b = await squareBreakdown(env, d, null);
-            if (d < today) { await env.TOKENS.put('sqbd9:' + d, JSON.stringify(b)); budget--; }
+            if (d < today) { await env.TOKENS.put('sqbd10:' + d, JSON.stringify(b)); budget--; }
           }
           orders += b.orders || 0; totalQty += b.totalQty || 0; totalNet += b.totalNet || 0; surchargeGross += b.surchargeGross || 0;
           (b.extras || []).forEach((x) => { extras[x.name] = (extras[x.name] || 0) + (x.gross || 0); });
@@ -1017,6 +1044,7 @@ export default {
             cc.qty += c.qty || 0; cc.net += c.net || 0; cc.gross += c.gross || 0;
             (c.flavours || []).forEach((f) => { cc.flavours[f.name] = (cc.flavours[f.name] || 0) + (f.qty || 0); });
             (c.boxes || []).forEach((f) => { cc.boxes[f.name] = (cc.boxes[f.name] || 0) + (f.qty || 0); });
+            (cc.unclear || (cc.unclear = [])).push(...(c.unclear || []));
             (c.items || []).forEach((it) => {
               const ii = cc.items[it.name] || (cc.items[it.name] = { name: it.name, qty: 0, net: 0, gross: 0 });
               ii.qty += it.qty || 0; ii.net += it.net || 0; ii.gross += it.gross || 0;
@@ -1026,7 +1054,8 @@ export default {
         const categories = Object.values(cats)
           .map((c) => ({ ...c, items: Object.values(c.items).sort((a, b) => b.qty - a.qty),
             flavours: Object.entries(c.flavours).map(([name, qty]) => ({ name, qty })).sort((a, b) => b.qty - a.qty),
-            boxes: Object.entries(c.boxes).map(([name, qty]) => ({ name, qty })).sort((a, b) => b.qty - a.qty) }))
+            boxes: Object.entries(c.boxes).map(([name, qty]) => ({ name, qty })).sort((a, b) => b.qty - a.qty),
+            unclear: (c.unclear || []).slice(0, 30) }))
           .sort((a, b) => b.net - a.net);
         return json({ from, to, days: dates.length - pending, pending, orders, totalQty, totalNet, surchargeGross,
           extras: Object.entries(extras).map(([name, gross]) => ({ name, gross })), categories });
