@@ -160,14 +160,14 @@ const METRICS_BY_VENUE = {
     {key:'revenue', label:'Revenue (incl. GST)', src:'Bepoz', primary:true},
     {key:'count', label:'Transactions', src:'Bepoz', primary:true},
     {key:'acs', label:'Avg spend', src:'', primary:true},
-    {key:'cogs', label:'Cost of goods', src:'Xero'},
+    {key:'cogs', label:'Cost of goods %', src:'Xero'},
     {key:'wagepct', label:'Wage %', src:'Xero'}
   ],
   doughgirlz: [
     {key:'revenue', label:'Revenue (incl. GST)', src:'Square', primary:true},
     {key:'count', label:'Transactions', src:'Square', primary:true},
     {key:'acs', label:'Avg spend', src:'', primary:true},
-    {key:'cogs', label:'Cost of goods', src:'Xero'},
+    {key:'cogs', label:'Cost of goods %', src:'Xero'},
     {key:'wagepct', label:'Wage %', src:'Xero'}
   ]
 };
@@ -787,7 +787,8 @@ function renderCards(data){
     revenue: revenue==null?null:fmtMoney(revenue*GST),
     count: count==null?null:count.toLocaleString(),
     acs: acs===null?null:(acs==='—'?'—':fmtMoney(acs)),
-    cogs: cogs==null?null:fmtMoney(cogs),
+    // Cost of goods as a % of revenue (both ex-GST), like Wage %.
+    cogs: (cogs==null || !revenue) ? null : fmtPct(cogs/revenue),
     wagepct: wagepct==null?null:fmtPct(wagepct),
     overheads: overheads==null?null:fmtMoney(overheads),
     profit: profit==null?null:fmtMoney(profit)
