@@ -148,8 +148,7 @@
     <input type="text" id="set-wagetarget" placeholder="e.g. 35">
     <label>Cost of goods % target (amber above this)</label>
     <input type="text" id="set-cogstarget" placeholder="e.g. 30">
-    <label>Minimum Profit % target (amber below this)</label>
-    <input type="text" id="set-profittarget" placeholder="e.g. 15">
+    <input type="hidden" id="set-profittarget">
     <button class="btn" onclick="saveSettings()">Save targets</button>
     <p style="margin-top:20px"><button class="btn" style="background:#374151" onclick="logout()">Log out</button></p>
   </div>
@@ -162,18 +161,14 @@ const METRICS_BY_VENUE = {
     {key:'count', label:'Transactions', src:'Bepoz', primary:true},
     {key:'acs', label:'Avg spend', src:'', primary:true},
     {key:'cogs', label:'Cost of goods', src:'Xero'},
-    {key:'wagepct', label:'Wage %', src:'Xero'},
-    {key:'overheads', label:'Overheads', src:'Xero'},
-    {key:'profit', label:'Profit', src:'Xero'}
+    {key:'wagepct', label:'Wage %', src:'Xero'}
   ],
   doughgirlz: [
     {key:'revenue', label:'Revenue (incl. GST)', src:'Square', primary:true},
     {key:'count', label:'Transactions', src:'Square', primary:true},
     {key:'acs', label:'Avg spend', src:'', primary:true},
     {key:'cogs', label:'Cost of goods', src:'Xero'},
-    {key:'wagepct', label:'Wage %', src:'Xero'},
-    {key:'overheads', label:'Overheads', src:'Xero'},
-    {key:'profit', label:'Profit', src:'Xero'}
+    {key:'wagepct', label:'Wage %', src:'Xero'}
   ]
 };
 let currentVenue = localStorage.getItem('vd_venue') || 'guncotton';
