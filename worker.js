@@ -448,6 +448,27 @@ async function squareApi(env, path, method, body) {
   }
   return data;
 }
+// Name lookups for the discount list. Results are stored, so each customer / team member is only fetched once.
+async function squareCustomerName(env, id) {
+  const key = 'sqcust:' + id;
+  const hit = await env.TOKENS.get(key); if (hit !== null) return hit || null;
+  const d = await squareApi(env, '/v2/customers/' + encodeURIComponent(id));
+  const c = d.customer || {};
+  const name = [c.given_name, c.family_name].filter(Boolean).join(' ') || c.company_name || c.nickname || '';
+  await env.TOKENS.put(key, name, { expirationTtl: 60 * 60 * 24 * 30 });
+  return name || null;
+}
+async function squarePaymentStaff(env, paymentId) {
+  const p = (await squareApi(env, '/v2/payments/' + encodeURIComponent(paymentId))).payment || {};
+  const tm = p.team_member_id || p.employee_id;
+  if (!tm) return null;
+  const key = 'sqteam:' + tm;
+  const hit = await env.TOKENS.get(key); if (hit !== null) return hit || null;
+  const m = (await squareApi(env, '/v2/team-members/' + encodeURIComponent(tm))).team_member || {};
+  const name = [m.given_name, m.family_name].filter(Boolean).join(' ');
+  await env.TOKENS.put(key, name, { expirationTtl: 60 * 60 * 24 * 30 });
+  return name || null;
+}
 async function squareLocationIds(env) {
   return cached(env, 'status-cache:sqlocs', 3600, async () => {
     const data = await squareApi(env, '/v2/locations');
@@ -648,9 +669,32 @@ async function squareBreakdown(env, date, hour) {
   const discByName = {};
   orders.forEach((o) => (o.discounts || []).forEach((d) => {
     const n = String(d.name || 'Discount').trim();
-    const r = discByName[n] || (discByName[n] = { name: n, amount: 0, count: 0 });
+    const r = discByName[n] || (discByName[n] = { name: n, amount: 0, count: 0, tx: [] });
     r.amount += amt(d.applied_money) / 100; r.count += 1;
+    // Each sale that used this discount, so it can be opened on the dashboard.
+    if (r.tx.length < 60) r.tx.push({ order: o, time: o.closed_at || o.created_at, amount: amt(d.applied_money) / 100, total: amt(o.total_money) / 100,
+      items: (o.line_items || []).map((li) => ({ name: li.name + (li.variation_name && !/^regular$/i.test(li.variation_name) ? ' (' + li.variation_name + ')' : ''), qty: parseFloat(li.quantity) || 1 })) });
   }));
+  // Who each staff-discount sale was for (customer / name on the order) and who rang it up (team member).
+  // Looked up only for staff discounts, a limited number per day; names are remembered so they're fetched once.
+  let lookups = 0;
+  for (const r of Object.values(discByName)) {
+    const staff = /staff/i.test(r.name);
+    for (const t of r.tx) {
+      const o = t.order; delete t.order;
+      const named = o.ticket_name || ((o.fulfillments || []).map((f) => (f.pickup_details && f.pickup_details.recipient && f.pickup_details.recipient.display_name) || '').find(Boolean)) || '';
+      t.name = named || null;
+      t.note = (o.line_items || []).map((li) => li.note).filter(Boolean).join(' · ') || null;
+      if (!staff || lookups >= 25) continue;
+      lookups++;
+      try { if (!t.name && o.customer_id) t.name = await squareCustomerName(env, o.customer_id); } catch (e) {}
+      try {
+        const payId = (o.tenders || []).map((x) => x.payment_id || x.id).find(Boolean);
+        if (payId) t.servedBy = await squarePaymentStaff(env, payId);
+      } catch (e) {}
+    }
+    r.tx.sort((a, b) => String(a.time).localeCompare(String(b.time)));
+  }
   const discounts = Object.values(discByName).sort((a, b) => b.amount - a.amount);
   const categories = Object.values(cats)
     .map((c) => ({ name: c.name, qty: c.qty, net: c.net, gross: c.gross, items: Object.values(c.items).sort((a, b) => b.qty - a.qty),
@@ -1129,7 +1173,7 @@ export default {
       try {
         const today = toBrisbane(new Date()).dateStr;
         const dates = listDates(from, to).filter((d) => d <= today).slice(0, 31);
-        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd20:' + d) : null)));
+        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd21:' + d) : null)));
         let budget = 4, pending = 0, orders = 0, totalQty = 0, totalNet = 0, surchargeGross = 0;
         const cats = {}, extras = {}, discs = {};
         for (let i = 0; i < dates.length; i++) {
@@ -1138,11 +1182,11 @@ export default {
           if (!b) {
             if (d < today && budget <= 0) { pending++; continue; }
             b = await squareBreakdown(env, d, null);
-            if (d < today) { await env.TOKENS.put('sqbd20:' + d, JSON.stringify(b)); budget--; }
+            if (d < today) { await env.TOKENS.put('sqbd21:' + d, JSON.stringify(b)); budget--; }
           }
           orders += b.orders || 0; totalQty += b.totalQty || 0; totalNet += b.totalNet || 0; surchargeGross += b.surchargeGross || 0;
           (b.extras || []).forEach((x) => { extras[x.name] = (extras[x.name] || 0) + (x.gross || 0); });
-          (b.discounts || []).forEach((x) => { const r = discs[x.name] || (discs[x.name] = { name: x.name, amount: 0, count: 0 }); r.amount += x.amount || 0; r.count += x.count || 0; });
+          (b.discounts || []).forEach((x) => { const r = discs[x.name] || (discs[x.name] = { name: x.name, amount: 0, count: 0, tx: [] }); r.amount += x.amount || 0; r.count += x.count || 0; if (r.tx.length < 200) r.tx.push(...(x.tx || [])); });
           (b.categories || []).forEach((c) => {
             const cc = cats[c.name] || (cats[c.name] = { name: c.name, qty: 0, net: 0, gross: 0, items: {}, flavours: {}, boxes: {} });
             cc.qty += c.qty || 0; cc.net += c.net || 0; cc.gross += c.gross || 0;
