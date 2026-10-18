@@ -349,7 +349,24 @@ function renderBreakdown(data){
       .map(x=>'<div class="prow"><span>'+escHtml(x.name)+'</span><span></span><span>'+money(x.gross)+'</span></div>').join('') : '')
     // Discounts are already taken off the sales above; listed so you can see what was given away.
     + ((data.discounts && data.discounts.length) ? '<div class="fhead">Discounts given (already taken off)</div>'+
-        data.discounts.map(d=>'<div class="prow" style="color:var(--muted)"><span>'+escHtml(d.name)+'</span><span>'+qty(d.count)+'×</span><span>−'+money(d.amount)+'</span></div>').join('') : '');
+        data.discounts.map(d=>{
+          // Tap a discount to see every sale that used it: time, who it was for, who rang it up, what was bought.
+          const tx = d.tx || [];
+          const multiDay = new Set(tx.map(t=>String(t.time||'').slice(0,10))).size > 1;
+          const when = (t)=>{ const x = new Date(t.time); if(isNaN(x)) return '';
+            const hm = x.toLocaleTimeString('en-AU',{hour:'numeric',minute:'2-digit'});
+            return multiDay ? x.toLocaleDateString('en-AU',{weekday:'short',day:'numeric',month:'short'})+' '+hm : hm; };
+          const rows = tx.map(t=>{
+            const who = [t.name ? '<b>'+escHtml(t.name)+'</b>' : 'No name on sale', t.servedBy ? 'served by '+escHtml(t.servedBy) : ''].filter(Boolean).join(' · ');
+            const items = (t.items||[]).map(i=>(i.qty>1?qty(i.qty)+'× ':'')+escHtml(i.name)).join(', ');
+            return '<div class="prow" style="align-items:start"><span>'+escHtml(when(t))+' – '+who+
+              '<br><span style="font-size:11px">'+items+(t.note?' · note “'+escHtml(t.note)+'”':'')+'</span></span><span></span><span>−'+money(t.amount)+'</span></div>';
+          }).join('');
+          return tx.length
+            ? '<div class="prow crow" style="color:var(--muted)"><span><span class="chev">▸</span>'+escHtml(d.name)+'</span><span>'+qty(d.count)+'×</span><span>−'+money(d.amount)+'</span></div>'+
+              '<div class="citems">'+rows+'</div>'
+            : '<div class="prow" style="color:var(--muted)"><span>'+escHtml(d.name)+'</span><span>'+qty(d.count)+'×</span><span>−'+money(d.amount)+'</span></div>';
+        }).join('') : '');
 }
 
 async function loadDrill(row){
