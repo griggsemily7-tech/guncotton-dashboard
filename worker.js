@@ -152,10 +152,16 @@ const XERO = {
   scopes: 'offline_access accounting.reports.profitandloss.read accounting.settings.read payroll.employees.read payroll.payruns.read'
 };
 
-const ROUBLER = {
+// Roubler addresses. Staging by default; for production set ROUBLER_TOKEN_URL and ROUBLER_GRAPHQL_URL as
+// Cloudflare variables (from Roubler's PROD document) — no code change needed to switch.
+const ROUBLER_STAGING = {
   tokenUrl: 'https://oidc.staging.roubler.net/oauth2/token',
   graphqlUrl: 'https://graphql.au.staging.roubler.net/graphql'
 };
+const roublerCfg = (env) => ({
+  tokenUrl: (env && env.ROUBLER_TOKEN_URL) || ROUBLER_STAGING.tokenUrl,
+  graphqlUrl: (env && env.ROUBLER_GRAPHQL_URL) || ROUBLER_STAGING.graphqlUrl
+});
 // Read-only Roubler (staging) integration: rotates access/refresh tokens in KV, seeded once from a
 // Cloudflare secret (ROUBLER_INITIAL_REFRESH_TOKEN) obtained via the one-time Postman login Roubler described.
 async function roublerRefresh(env) {
@@ -167,7 +173,7 @@ async function roublerRefresh(env) {
   if (!t || !t.refresh_token) { const e = new Error('no roubler refresh token configured'); e.status = 401; throw e; }
   if (t.access_token && t.expires_at && Date.now() < t.expires_at - 60000) return t.access_token;
   const body = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: t.refresh_token });
-  const res = await fetch(ROUBLER.tokenUrl, {
+  const res = await fetch(roublerCfg(env).tokenUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', Authorization: 'Basic ' + btoa((env.ROUBLER_CLIENT_ID || '') + ':' + (env.ROUBLER_CLIENT_SECRET || '')) },
     body: body.toString()
@@ -181,7 +187,7 @@ async function roublerRefresh(env) {
 }
 async function roublerGraphQL(env, query, variables, accessToken) {
   const token = accessToken || await roublerRefresh(env);
-  const res = await fetch(ROUBLER.graphqlUrl, {
+  const res = await fetch(roublerCfg(env).graphqlUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
     body: JSON.stringify({ operationName: query.operationName, variables: variables || {}, query: query.query })
@@ -1309,7 +1315,7 @@ export default {
         }
       }
       await noteSync(env, 'roubler');
-      return json({ environment: 'staging', readOnly: true, testedAt: new Date().toISOString(), summary: results.map((r) => ({ area: r.area, passed: r.passed, records: r.records, errors: r.errors ? r.errors.map((x) => x.message || x) : null })), results });
+      return json({ environment: /staging/.test(roublerCfg(env).graphqlUrl) ? 'staging' : 'production', readOnly: true, testedAt: new Date().toISOString(), summary: results.map((r) => ({ area: r.area, passed: r.passed, records: r.records, errors: r.errors ? r.errors.map((x) => x.message || x) : null })), results });
     }
     // One-off, read-only: asks Roubler's staging GraphQL API to describe itself (standard GraphQL
     // introspection), so we can write the exact Locations / Shifts / Timesheets / Pay-rate test queries
