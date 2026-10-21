@@ -172,6 +172,16 @@ async function roublerRefresh(env) {
   if (seed && (!t || t.seed !== seed)) t = { refresh_token: seed, seed };
   if (!t || !t.refresh_token) { const e = new Error('no roubler refresh token configured'); e.status = 401; throw e; }
   if (t.access_token && t.expires_at && Date.now() < t.expires_at - 60000) return t.access_token;
+  // Another request is already refreshing: wait for it and use the token it saves, rather than
+  // sending the same (soon-to-be-dead) refresh token a second time.
+  if (await env.TOKENS.get('roubler-refresh-lock')) {
+    for (let i = 0; i < 6; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const again = await getTokens(env, 'roubler');
+      if (again && again.access_token && again.expires_at && Date.now() < again.expires_at - 60000) return again.access_token;
+    }
+  }
+  await env.TOKENS.put('roubler-refresh-lock', '1', { expirationTtl: 60 });
   const body = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: t.refresh_token });
   const res = await fetch(roublerCfg(env).tokenUrl, {
     method: 'POST',
@@ -183,6 +193,7 @@ async function roublerRefresh(env) {
   // Roubler invalidates the old refresh token on every use, so the new one MUST be persisted or the next call breaks.
   const updated = { access_token: fresh.access_token, refresh_token: fresh.refresh_token || t.refresh_token, expires_at: Date.now() + ((fresh.expires_in || 1800) * 1000), seed: t.seed || seed || null };
   await saveTokens(env, 'roubler', updated);
+  await env.TOKENS.delete('roubler-refresh-lock');
   return updated.access_token;
 }
 async function roublerGraphQL(env, query, variables, accessToken) {
@@ -474,6 +485,56 @@ async function squarePaymentStaff(env, paymentId) {
   const name = [m.given_name, m.family_name].filter(Boolean).join(' ');
   await env.TOKENS.put(key, name, { expirationTtl: 60 * 60 * 24 * 30 });
   return name || null;
+}
+// ---- Wages from Roubler ----
+// Directors aren't counted in staff wage %. Roasters aren't cafe labour, so they're left out too.
+const ROUBLER_DIRECTORS = ['ian griggs', 'mary griggs', 'queila griggs'];
+// Which venue (and, for Gun Cotton, which section) a shift or timesheet belongs to.
+function roublerClassify(locName, posName, mainPos, empName) {
+  const loc = String(locName || ''), pos = String(posName || ''), main = String(mainPos || ''), who = String(empName || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  if (ROUBLER_DIRECTORS.includes(who)) return null;
+  if (/roast/i.test(pos) || /roast/i.test(main) || /roastery/i.test(loc)) return null;
+  // Anything labelled Dough Girlz / DG / Bakehouse (including the DG Bakehouse chefs) is Doughgirlz.
+  if (/dough\s*girl|\bDG\b|bakehouse/i.test(loc + ' ' + pos)) return { venue: 'doughgirlz', section: null };
+  // Everything else is Gun Cotton cafe: kitchen (chefs, cooks, kitchen hands, dishes) or front of house.
+  const kitchen = /kitchen/i.test(loc) || /chef|cook|kitchen|dish/i.test(pos) || (!pos && /chef|cook|kitchen|dish/i.test(main));
+  return { venue: 'guncotton', section: kitchen ? 'kitchen' : 'foh' };
+}
+async function roublerWages(env, from, to) {
+  return cached(env, 'rbw2:' + from + ':' + to, 600, async () => {
+    const token = await roublerRefresh(env);
+    const today = toBrisbane(new Date()).dateStr;
+    const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
+    const emp = await roublerGraphQL(env, { operationName: 'Emp', query: 'query Emp { employees { id fullName position { name } } }' }, {}, token);
+    const mainPos = {};
+    ((emp && emp.data && emp.data.employees) || []).forEach((e) => { mainPos[e.id] = e.position && e.position.name; });
+    const ts = await roublerGraphQL(env, { operationName: 'Ts', query: 'query Ts($s: DateTime!, $e: DateTime!) { timesheets(startTime: $s, endTime: $e, includePending: true) { startTime hours cost status employee { id fullName } location { name } position { name } } }' }, { s: start, e: end }, token);
+    let rows = ((ts && ts.data && ts.data.timesheets) || []).map((t) => ({ ...t, kind: 'timesheet' }))
+      .filter((t) => toBrisbane(new Date(t.startTime)).dateStr < today);
+    // Today hasn't been clocked off yet, so today uses the roster (rostered shifts and their cost).
+    if (to >= today && from <= today) {
+      const sh = await roublerGraphQL(env, { operationName: 'Sh', query: 'query Sh($s: DateTime!, $e: DateTime!) { shifts(startTime: $s, endTime: $e, includeCostings: true) { startTime hours cost published employee { id fullName } location { name } position { name } } }' }, { s: today + 'T00:00:00+10:00', e: today + 'T23:59:59+10:00' }, token);
+      rows = rows.concat(((sh && sh.data && sh.data.shifts) || []).filter((x) => x.published !== false).map((x) => ({ ...x, kind: 'shift' })));
+    }
+    // Hourly cost per person from rows that have a cost, to estimate rows Roubler hasn't costed yet
+    // (timesheets not approved yet show no cost).
+    const rate = {}; let allCost = 0, allHrs = 0;
+    rows.forEach((r) => { if (r.cost != null && r.hours > 0) { const id = r.employee && r.employee.id; const x = rate[id] || (rate[id] = { c: 0, h: 0 }); x.c += r.cost / 100; x.h += r.hours; allCost += r.cost / 100; allHrs += r.hours; } });
+    const avg = allHrs ? allCost / allHrs : 0;
+    const blank = () => ({ wages: 0, hours: 0, estimated: 0, rostered: false });
+    const out = { doughgirlz: blank(), guncotton: { ...blank(), sections: { foh: blank(), kitchen: blank() } } };
+    rows.forEach((r) => {
+      const id = r.employee && r.employee.id;
+      const cls = roublerClassify(r.location && r.location.name, r.position && r.position.name, mainPos[id], r.employee && r.employee.fullName);
+      if (!cls) return;
+      let cost = r.cost != null ? r.cost / 100 : null, est = false;
+      if (cost == null) { const x = rate[id]; cost = (r.hours || 0) * (x && x.h ? x.c / x.h : avg); est = true; }
+      const add = (b) => { b.wages += cost; b.hours += r.hours || 0; if (est) b.estimated += cost; if (r.kind === 'shift') b.rostered = true; };
+      add(out[cls.venue]);
+      if (cls.venue === 'guncotton') add(out.guncotton.sections[cls.section]);
+    });
+    return out;
+  });
 }
 async function squareLocationIds(env) {
   return cached(env, 'status-cache:sqlocs', 3600, async () => {
@@ -1170,6 +1231,17 @@ export default {
           }
         }
         return json({ date, orders: orders.length, ordersWithUnexplainedExtra: count, totalUnexplained: totalExtra / 100, examples: found });
+      } catch (e) { return json({ error: String(e && e.message || e) }); }
+    }
+    if (path === '/api/roubler-wages') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const ok = (x) => /^\d{4}-\d{2}-\d{2}:\d{4}-\d{2}-\d{2}$/.test(x || '');
+      const cur = url.searchParams.get('cur'), prev = url.searchParams.get('prev');
+      if (!ok(cur)) return json({ error: 'bad range' }, 400);
+      try {
+        const c = await roublerWages(env, ...cur.split(':'));
+        const p = ok(prev) ? await roublerWages(env, ...prev.split(':')) : null;
+        return json({ cur: c, prev: p });
       } catch (e) { return json({ error: String(e && e.message || e) }); }
     }
     if (path === '/api/square-breakdown-range') {
