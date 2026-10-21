@@ -231,10 +231,15 @@ async function fetchData(silent){
   const r = rangeFor(period);
   const pr = prevRangeFor(period);
   const url = '/api/metrics?cur='+r.from+':'+r.to+'&prev='+pr.from+':'+pr.to+'&venue='+currentVenue+'&_='+Date.now();
+  // Wages come live from Roubler (both periods in one request, fetched alongside the sales figures).
+  const rbP = fetch('/api/roubler-wages?cur='+r.from+':'+r.to+'&prev='+pr.from+':'+pr.to, {cache:'no-store'})
+    .then(x=>x.ok ? x.json() : null).catch(()=>null);
   const res = await fetch(url, {cache:'no-store'});
   if(myGen !== fetchGen) return; // a newer tab switch/period change has already started a fresher fetch — drop this stale one
   if(res.status===401){ location.reload(); return; }
   const data = await res.json();
+  data.roubler = await rbP;
+  if(myGen !== fetchGen) return;
   data.prevLabel = PREV_LABELS[period] || 'vs last period';
   if(period==='today'){
     // Today is only part-way through, so compare it with last week's same day up to the same time.
@@ -771,7 +776,11 @@ function renderCards(data){
   const count = pos ? pos.count : null;
   const acs = (revenue!=null && count!=null) ? (count===0 ? '—' : (revenue*GST/count)) : null;
   const cogs = acc ? acc.cogs : null;
-  const wagepct = (acc && revenue) ? (acc.wagesSuper/revenue) : null;
+  // Wage % from Roubler (staff only — directors and roasters left out) when it's available, otherwise Xero.
+  const rbOk = data.roubler && !data.roubler.error && data.roubler.cur;
+  const rb = rbOk ? data.roubler.cur[currentVenue] : null;
+  const prb = rbOk && data.roubler.prev ? data.roubler.prev[currentVenue] : null;
+  const wagepct = (rb && revenue) ? (rb.wages/revenue) : (acc && revenue) ? (acc.wagesSuper/revenue) : null;
   const overheads = acc ? acc.overheads : null;
   const profit = acc ? (revenue - acc.cogs - acc.wagesSuper - acc.overheads) : null;
 
@@ -779,7 +788,7 @@ function renderCards(data){
   const pAcc = prev.accounting;
   const pRevenue = data.prevSameTime!=null ? data.prevSameTime : (pAcc ? pAcc.revenue : null);
   const sameTimeMode = data.prevSameTime!=null; // costs can't be matched by time of day, so profit/wage badges are left off
-  const pWagepct = (pAcc && pRevenue) ? (pAcc.wagesSuper/pRevenue) : null;
+  const pWagepct = (rb && prb && pRevenue) ? (prb.wages/pRevenue) : (!rb && pAcc && pRevenue) ? (pAcc.wagesSuper/pRevenue) : null;
   const pProfit = pAcc ? (pRevenue - pAcc.cogs - pAcc.wagesSuper - pAcc.overheads) : null;
 
   const prevLabel = data.prevLabel || 'vs last period';
@@ -829,6 +838,18 @@ function renderCards(data){
     const diff = wagepct*100 - wageTarget;
     targetLines.wagepct = diff<=0 ? 'Target '+wageTarget+'% ✓' : 'Target '+wageTarget+'% · '+diff.toFixed(1)+' pts over';
   }
+  if (rb) {
+    const bits = ['$'+Math.round(rb.wages).toLocaleString()+' wages · '+(Math.round(rb.hours*10)/10)+' hrs'];
+    if (rb.rostered) bits.push("today from the roster");
+    if (rb.estimated > 0.5) bits.push('$'+Math.round(rb.estimated).toLocaleString()+' estimated (timesheets not approved yet)');
+    targetLines.wagepct = (targetLines.wagepct ? targetLines.wagepct+'<br>' : '') + bits.join(' · ');
+    // Gun Cotton: front of house vs kitchen (chefs, kitchen hands and dishes), each as a % of revenue.
+    if (currentVenue==='guncotton' && rb.sections && revenue) {
+      const line = (name, b)=> '<div style="display:flex;justify-content:space-between;gap:8px"><span>'+name+'</span><span><b>'+fmtPct(b.wages/revenue)+'</b> · $'+Math.round(b.wages).toLocaleString()+'</span></div>';
+      targetLines.wagepct += '<details style="margin-top:6px"><summary style="cursor:pointer">Front of house vs kitchen</summary>'+
+        line('Front of house', rb.sections.foh)+line('Kitchen (incl. dishes)', rb.sections.kitchen)+'</details>';
+    }
+  }
   if (!isNaN(cogsTarget) && cogsPct != null) {
     const diff = cogsPct - cogsTarget;
     targetLines.cogs = diff<=0 ? 'Target '+cogsTarget+'% ✓' : 'Target '+cogsTarget+'% · '+diff.toFixed(1)+' pts over';
@@ -841,7 +862,8 @@ function renderCards(data){
   const card = (m) => {
     const v = vals[m.key];
     const cssClass = cls[m.key] ? ' ' + cls[m.key] : '';
-    const src = m.src ? '<span class="src">'+m.src+'</span>' : '';
+    const srcName = (m.key==='wagepct' && rb) ? 'Roubler' : m.src;
+    const src = srcName ? '<span class="src">'+srcName+'</span>' : '';
     const badge = badges[m.key] ? '<div class="delta">'+badges[m.key]+'</div>' : '';
     const note = targetLines[m.key] ? '<div class="desc">'+targetLines[m.key]+'</div>' : '';
     return '<div class="mcard '+(m.primary?'big':'small')+'"><div class="label">'+m.label+src+'</div>'+
@@ -852,8 +874,10 @@ function renderCards(data){
   const primaryHtml = METRICS.filter(m=>m.primary).map(card).join('');
   // Costs, wages and profit come from Xero, which isn't entered day by day, so on "Today" they'd
   // just read $0 and mislead. Show a one-line note instead and keep the live sales figures clean.
+  // Wage % comes live from Roubler, so it shows on Today too (from the roster); costs still need Xero.
   const secondaryHtml = isToday
-    ? '<div style="grid-column:1/-1;color:var(--muted);font-size:13px;padding:2px">Costs, wages and profit come from Xero, so they show in the week and month views.</div>'
+    ? (rb ? METRICS.filter(m=>m.key==='wagepct').map(card).join('') : '') +
+      '<div style="grid-column:1/-1;color:var(--muted);font-size:13px;padding:2px">Cost of goods comes from Xero, so it shows in the week and month views.</div>'
     : METRICS.filter(m=>!m.primary).map(card).join('');
   document.getElementById('cards').innerHTML = primaryHtml + secondaryHtml;
 }
