@@ -780,7 +780,8 @@ function renderCards(data){
   const rbOk = data.roubler && !data.roubler.error && data.roubler.cur;
   const rb = rbOk ? data.roubler.cur[currentVenue] : null;
   const prb = rbOk && data.roubler.prev ? data.roubler.prev[currentVenue] : null;
-  const wagepct = (rb && revenue) ? (rb.wages/revenue) : (acc && revenue) ? (acc.wagesSuper/revenue) : null;
+  // Wage % is worked out on revenue INCLUDING GST (what the till took); cost of goods % stays on revenue ex-GST.
+  const wagepct = (rb && revenue) ? (rb.wages/(revenue*GST)) : (acc && revenue) ? (acc.wagesSuper/(revenue*GST)) : null;
   const overheads = acc ? acc.overheads : null;
   const profit = acc ? (revenue - acc.cogs - acc.wagesSuper - acc.overheads) : null;
 
@@ -788,7 +789,7 @@ function renderCards(data){
   const pAcc = prev.accounting;
   const pRevenue = data.prevSameTime!=null ? data.prevSameTime : (pAcc ? pAcc.revenue : null);
   const sameTimeMode = data.prevSameTime!=null; // costs can't be matched by time of day, so profit/wage badges are left off
-  const pWagepct = (rb && prb && pRevenue) ? (prb.wages/pRevenue) : (!rb && pAcc && pRevenue) ? (pAcc.wagesSuper/pRevenue) : null;
+  const pWagepct = (rb && prb && pRevenue) ? (prb.wages/(pRevenue*GST)) : (!rb && pAcc && pRevenue) ? (pAcc.wagesSuper/(pRevenue*GST)) : null;
   const pProfit = pAcc ? (pRevenue - pAcc.cogs - pAcc.wagesSuper - pAcc.overheads) : null;
 
   const prevLabel = data.prevLabel || 'vs last period';
@@ -845,7 +846,7 @@ function renderCards(data){
     targetLines.wagepct = (targetLines.wagepct ? targetLines.wagepct+'<br>' : '') + bits.join(' · ');
     // Gun Cotton: front of house vs kitchen (chefs, kitchen hands and dishes), each as a % of revenue.
     if (currentVenue==='guncotton' && rb.sections && revenue) {
-      const line = (name, b)=> '<div style="display:flex;justify-content:space-between;gap:8px"><span>'+name+'</span><span><b>'+fmtPct(b.wages/revenue)+'</b> · $'+Math.round(b.wages).toLocaleString()+'</span></div>';
+      const line = (name, b)=> '<div style="display:flex;justify-content:space-between;gap:8px"><span>'+name+'</span><span><b>'+fmtPct(b.wages/(revenue*GST))+'</b> · $'+Math.round(b.wages).toLocaleString()+'</span></div>';
       targetLines.wagepct += '<details style="margin-top:6px"><summary style="cursor:pointer">Front of house vs kitchen</summary>'+
         line('Front of house', rb.sections.foh)+line('Kitchen (incl. dishes)', rb.sections.kitchen)+'</details>';
     }
