@@ -840,7 +840,7 @@ function renderCards(data){
     targetLines.wagepct = diff<=0 ? 'Target '+wageTarget+'% ✓' : 'Target '+wageTarget+'% · '+diff.toFixed(1)+' pts over';
   }
   if (rb) {
-    const bits = ['$'+Math.round(rb.wages).toLocaleString()+' wages incl. 12% super · '+(Math.round(rb.hours*10)/10)+' hrs'];
+    const bits = ['$'+Math.round(rb.wages).toLocaleString()+' wages incl. super & salaried leave · '+(Math.round(rb.hours*10)/10)+' hrs'];
     if (rb.rostered) bits.push("today so far, from the roster");
     if (rb.estimated > 0.5) bits.push('$'+Math.round(rb.estimated).toLocaleString()+' estimated (timesheets not approved yet)');
     targetLines.wagepct = (targetLines.wagepct ? targetLines.wagepct+'<br>' : '') + bits.join(' · ');
