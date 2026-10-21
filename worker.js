@@ -490,8 +490,12 @@ async function squarePaymentStaff(env, paymentId) {
 // People never counted in wage %. Mary and Queila ARE counted when rostered (it shows how many people a
 // shift really needs). Roasters aren't cafe labour, so they're left out too.
 const ROUBLER_DIRECTORS = ['ian griggs'];
-// Superannuation added on top of Roubler's wage cost (Roubler's cost doesn't include it).
+// Superannuation added on top of Roubler's wage cost (Roubler's cost doesn't include it). Under-18s only
+// get super for a week in which they work more than 30 hours.
 const SUPER_RATE = 0.12;
+// Salaried staff are paid on their annual leave (4 weeks) and sick days (10) too, but don't work those
+// days, so each worked day really costs 260 ÷ 230 of the day's salary.
+const SALARY_LEAVE_FACTOR = 260 / 230;
 // Which venue (and, for Gun Cotton, which section) a shift or timesheet belongs to.
 function roublerClassify(locName, posName, mainPos, empName) {
   const loc = String(locName || ''), pos = String(posName || ''), main = String(mainPos || ''), who = String(empName || '').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -505,13 +509,22 @@ function roublerClassify(locName, posName, mainPos, empName) {
 }
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw4:' + from + ':' + to, incToday ? 300 : 3600, async () => {
+  return cached(env, 'rbw5:' + from + ':' + to, incToday ? 300 : 3600, async () => {
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
-    const emp = await roublerGraphQL(env, { operationName: 'Emp', query: 'query Emp { employees { id fullName position { name } } }' }, {}, token);
-    const mainPos = {};
-    ((emp && emp.data && emp.data.employees) || []).forEach((e) => { mainPos[e.id] = e.position && e.position.name; });
+    const emp = await roublerGraphQL(env, { operationName: 'Emp', query: 'query Emp { employees { id fullName payBasis payType position { name } person { dateOfBirth } } }' }, {}, token);
+    const mainPos = {}, info = {};
+    ((emp && emp.data && emp.data.employees) || []).forEach((e) => {
+      mainPos[e.id] = e.position && e.position.name;
+      // payBasis 3 = annual salary. Only the birth date's year/month/day is used, to work out if someone is under 18.
+      info[e.id] = { salaried: e.payBasis === 3, dob: e.person && e.person.dateOfBirth ? String(e.person.dateOfBirth).slice(0, 10) : null };
+    });
+    const under18 = (id, dateStr) => {
+      const d = info[id] && info[id].dob; if (!d) return false;
+      const [y, m, dd] = d.split('-').map(Number), [Y, M, D] = dateStr.split('-').map(Number);
+      return (Y - y - ((M < m || (M === m && D < dd)) ? 1 : 0)) < 18;
+    };
     const ts = await roublerGraphQL(env, { operationName: 'Ts', query: 'query Ts($s: DateTime!, $e: DateTime!) { timesheets(startTime: $s, endTime: $e, includePending: true) { startTime hours cost status employee { id fullName } location { name } position { name } } }' }, { s: start, e: end }, token);
     let rows = ((ts && ts.data && ts.data.timesheets) || []).map((t) => ({ ...t, kind: 'timesheet' }))
       .filter((t) => toBrisbane(new Date(t.startTime)).dateStr < today);
@@ -534,6 +547,9 @@ async function roublerWages(env, from, to) {
     const avg = allHrs ? allCost / allHrs : 0;
     const blank = () => ({ wages: 0, hours: 0, estimated: 0, rostered: false });
     const out = { doughgirlz: blank(), guncotton: { ...blank(), sections: { foh: blank(), kitchen: blank() } } };
+    // First pass: each counted shift's base cost, its day and week, so under-18s' weekly hours are known.
+    const counted = [], weekHrs = {};
+    const weekOf = (dateStr) => { const d = new Date(dateStr + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.toISOString().slice(0, 10); };
     rows.forEach((r) => {
       const id = r.employee && r.employee.id;
       const cls = roublerClassify(r.location && r.location.name, r.position && r.position.name, mainPos[id], r.employee && r.employee.fullName);
@@ -541,9 +557,17 @@ async function roublerWages(env, from, to) {
       const f = r.kind === 'shift' ? r.frac : 1;
       let cost = r.cost != null ? r.cost / 100 : null, est = false;
       if (cost == null) { const x = rate[id]; cost = (r.hours || 0) * (x && x.h ? x.c / x.h : avg); est = true; }
-      cost *= f * (1 + SUPER_RATE);
+      const day = toBrisbane(new Date(r.startTime)).dateStr, wk = weekOf(day);
+      const key = id + '|' + wk; weekHrs[key] = (weekHrs[key] || 0) + (r.hours || 0);
+      counted.push({ r, id, cls, f, cost, est, day, key });
+    });
+    // Second pass: add super (and, for salaried staff, their paid leave) and total it up.
+    counted.forEach(({ r, id, cls, f, cost, est, day, key }) => {
+      const gotSuper = !under18(id, day) || weekHrs[key] > 30;
+      let total = cost * f * (gotSuper ? 1 + SUPER_RATE : 1);
+      if (info[id] && info[id].salaried) total *= SALARY_LEAVE_FACTOR;
       const hrs = (r.hours || 0) * f;
-      const add = (b) => { b.wages += cost; b.hours += hrs; if (est) b.estimated += cost; if (r.kind === 'shift') b.rostered = true; };
+      const add = (b) => { b.wages += total; b.hours += hrs; if (est) b.estimated += total; if (r.kind === 'shift') b.rostered = true; };
       add(out[cls.venue]);
       if (cls.venue === 'guncotton') add(out.guncotton.sections[cls.section]);
     });
