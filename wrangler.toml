@@ -13,3 +13,9 @@ binding = "TOKENS"
 # from the Cloudflare dashboard (Storage & Databases -> KV) and paste it here
 # as: id = "xxxxxxxx", then push again, so future deploys reuse the same
 # namespace instead of creating a new one.
+
+# Roubler production addresses (from Roubler's PROD access document, Oct 2026).
+# Kept here so every GitHub deploy keeps them; the login details stay as Cloudflare secrets.
+[vars]
+ROUBLER_TOKEN_URL = "https://oidc.roubler.com/oauth2/token"
+ROUBLER_GRAPHQL_URL = "https://app.roubler.com.au/graphql"
