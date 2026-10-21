@@ -487,8 +487,11 @@ async function squarePaymentStaff(env, paymentId) {
   return name || null;
 }
 // ---- Wages from Roubler ----
-// Directors aren't counted in staff wage %. Roasters aren't cafe labour, so they're left out too.
-const ROUBLER_DIRECTORS = ['ian griggs', 'mary griggs', 'queila griggs'];
+// People never counted in wage %. Mary and Queila ARE counted when rostered (it shows how many people a
+// shift really needs). Roasters aren't cafe labour, so they're left out too.
+const ROUBLER_DIRECTORS = ['ian griggs'];
+// Superannuation added on top of Roubler's wage cost (Roubler's cost doesn't include it).
+const SUPER_RATE = 0.12;
 // Which venue (and, for Gun Cotton, which section) a shift or timesheet belongs to.
 function roublerClassify(locName, posName, mainPos, empName) {
   const loc = String(locName || ''), pos = String(posName || ''), main = String(mainPos || ''), who = String(empName || '').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -501,7 +504,8 @@ function roublerClassify(locName, posName, mainPos, empName) {
   return { venue: 'guncotton', section: kitchen ? 'kitchen' : 'foh' };
 }
 async function roublerWages(env, from, to) {
-  return cached(env, 'rbw2:' + from + ':' + to, 600, async () => {
+  const incToday = to >= toBrisbane(new Date()).dateStr;
+  return cached(env, 'rbw4:' + from + ':' + to, incToday ? 300 : 3600, async () => {
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
@@ -513,8 +517,15 @@ async function roublerWages(env, from, to) {
       .filter((t) => toBrisbane(new Date(t.startTime)).dateStr < today);
     // Today hasn't been clocked off yet, so today uses the roster (rostered shifts and their cost).
     if (to >= today && from <= today) {
-      const sh = await roublerGraphQL(env, { operationName: 'Sh', query: 'query Sh($s: DateTime!, $e: DateTime!) { shifts(startTime: $s, endTime: $e, includeCostings: true) { startTime hours cost published employee { id fullName } location { name } position { name } } }' }, { s: today + 'T00:00:00+10:00', e: today + 'T23:59:59+10:00' }, token);
-      rows = rows.concat(((sh && sh.data && sh.data.shifts) || []).filter((x) => x.published !== false).map((x) => ({ ...x, kind: 'shift' })));
+      const sh = await roublerGraphQL(env, { operationName: 'Sh', query: 'query Sh($s: DateTime!, $e: DateTime!) { shifts(startTime: $s, endTime: $e, includeCostings: true) { startTime endTime hours cost published employee { id fullName } location { name } position { name } } }' }, { s: today + 'T00:00:00+10:00', e: today + 'T23:59:59+10:00' }, token);
+      // Only count the part of each shift that has happened so far, so today's wage % compares wages so far
+      // with sales so far (not the whole day's roster against a half-finished day of sales).
+      const nowMs = Date.now();
+      rows = rows.concat(((sh && sh.data && sh.data.shifts) || []).filter((x) => x.published !== false).map((x) => {
+        const st = new Date(x.startTime).getTime(), en = new Date(x.endTime).getTime();
+        const frac = en > st ? Math.max(0, Math.min(1, (nowMs - st) / (en - st))) : 0;
+        return { ...x, kind: 'shift', frac };
+      }));
     }
     // Hourly cost per person from rows that have a cost, to estimate rows Roubler hasn't costed yet
     // (timesheets not approved yet show no cost).
@@ -527,9 +538,12 @@ async function roublerWages(env, from, to) {
       const id = r.employee && r.employee.id;
       const cls = roublerClassify(r.location && r.location.name, r.position && r.position.name, mainPos[id], r.employee && r.employee.fullName);
       if (!cls) return;
+      const f = r.kind === 'shift' ? r.frac : 1;
       let cost = r.cost != null ? r.cost / 100 : null, est = false;
       if (cost == null) { const x = rate[id]; cost = (r.hours || 0) * (x && x.h ? x.c / x.h : avg); est = true; }
-      const add = (b) => { b.wages += cost; b.hours += r.hours || 0; if (est) b.estimated += cost; if (r.kind === 'shift') b.rostered = true; };
+      cost *= f * (1 + SUPER_RATE);
+      const hrs = (r.hours || 0) * f;
+      const add = (b) => { b.wages += cost; b.hours += hrs; if (est) b.estimated += cost; if (r.kind === 'shift') b.rostered = true; };
       add(out[cls.venue]);
       if (cls.venue === 'guncotton') add(out.guncotton.sections[cls.section]);
     });
