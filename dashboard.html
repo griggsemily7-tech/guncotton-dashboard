@@ -223,14 +223,48 @@ function prevRangeFor(period){
 }
 
 let fetchGen = 0;
+// ---- Speed: remember recent answers in the browser ----
+// Switching venue or period shows what was loaded in the last few minutes straight away; the automatic
+// 20-second refresh always fetches fresh figures (and updates what's remembered).
+let FRESH_FETCH = false;
+const _rawFetch = window.fetch.bind(window);
+const apiCache = new Map();
+window.fetch = (input, opts = {}) => {
+  const u = typeof input === 'string' ? input : input.url;
+  if ((opts.method || 'GET').toUpperCase() !== 'GET' || !String(u).startsWith('/api/')) return _rawFetch(input, opts);
+  const key = String(u).replace(/[&?]_=\d+/, '');
+  const hit = apiCache.get(key);
+  if (!FRESH_FETCH && hit && Date.now() - hit.t < 5 * 60 * 1000)
+    return Promise.resolve(new Response(hit.body, { status: 200, headers: { 'content-type': 'application/json' } }));
+  return _rawFetch(input, opts).then((res) => {
+    if (res.ok) res.clone().text().then((b) => {
+      // Don't remember half-finished answers ("still adding up…") or errors.
+      if (!/"pending":[1-9]/.test(b) && !/"error":/.test(b)) apiCache.set(key, { body: b, t: Date.now() });
+    }).catch(() => {});
+    return res;
+  });
+};
+// Quietly load the most-used views for both venues in the background, so the first click on them is quick too.
+let prefetched = false;
+function prefetchCommonViews(){
+  if (prefetched) return; prefetched = true;
+  const periods = ['today','week','month','lastweek'];
+  ['guncotton','doughgirlz'].forEach((v, vi) => periods.forEach((p, pi) => setTimeout(() => {
+    const r = rangeFor(p), pr = prevRangeFor(p);
+    fetch('/api/metrics?cur='+r.from+':'+r.to+'&prev='+pr.from+':'+pr.to+'&venue='+v, {cache:'no-store'}).catch(()=>{});
+    if (vi === 0) fetch('/api/roubler-wages?cur='+r.from+':'+r.to+'&prev='+pr.from+':'+pr.to, {cache:'no-store'}).catch(()=>{});
+  }, 1500 + (vi * periods.length + pi) * 700)));
+}
+
 async function fetchData(silent){
   const myGen = ++fetchGen;
+  FRESH_FETCH = !!silent;
   if(!silent) document.getElementById('cards').innerHTML = '<div style="color:var(--muted);padding:20px 0">Loading…</div>';
   const period = document.getElementById('period').value;
   localStorage.setItem('vd_period', period);
   const r = rangeFor(period);
   const pr = prevRangeFor(period);
-  const url = '/api/metrics?cur='+r.from+':'+r.to+'&prev='+pr.from+':'+pr.to+'&venue='+currentVenue+'&_='+Date.now();
+  const url = '/api/metrics?cur='+r.from+':'+r.to+'&prev='+pr.from+':'+pr.to+'&venue='+currentVenue;
   // Wages come live from Roubler (both periods in one request, fetched alongside the sales figures).
   const rbP = fetch('/api/roubler-wages?cur='+r.from+':'+r.to+'&prev='+pr.from+':'+pr.to, {cache:'no-store'})
     .then(x=>x.ok ? x.json() : null).catch(()=>null);
@@ -238,7 +272,10 @@ async function fetchData(silent){
   if(myGen !== fetchGen) return; // a newer tab switch/period change has already started a fresher fetch — drop this stale one
   if(res.status===401){ location.reload(); return; }
   const data = await res.json();
-  data.roubler = await rbP;
+  // Wait a moment for Roubler; if it's slower, show everything now and redraw the cards when it arrives.
+  let rbLate = false;
+  data.roubler = await Promise.race([rbP, new Promise(r=>setTimeout(()=>{ rbLate = true; r(null); }, 1200))]);
+  if(rbLate) rbP.then(rb=>{ if(rb && myGen === fetchGen){ data.roubler = rb; renderCards(data); } });
   if(myGen !== fetchGen) return;
   data.prevLabel = PREV_LABELS[period] || 'vs last period';
   if(period==='today'){
@@ -263,6 +300,7 @@ async function fetchData(silent){
   fetchDailySales(r, myGen, silent, period);
   fetchGoals(r, myGen, silent, period);
   fetchCompareChart(myGen, silent, period, r, pr);
+  prefetchCommonViews();
 }
 
 async function fetchBepozHealth(myGen){
