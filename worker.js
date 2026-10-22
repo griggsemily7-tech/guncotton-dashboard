@@ -894,7 +894,14 @@ async function accountingStatus(env) {
 }
 async function slot(env, from, to, trackingIdsList, venue, budget) {
   const out = { accounting: null, pos: null };
-  try { out.accounting = await xeroPLCombined(env, from, to, trackingIdsList); await noteSync(env, 'accounting'); } catch (e) { out.accountingError = String(e && e.message || e); }
+  try {
+    // Xero's profit & loss is slow to fetch, so it's remembered briefly: 5 minutes for periods that include
+    // today, an hour for finished periods (bills entered later still appear within the hour).
+    const today = toBrisbane(new Date()).dateStr;
+    const key = 'xpl:' + from + ':' + to + ':' + JSON.stringify(trackingIdsList || null);
+    out.accounting = await cached(env, key, to >= today ? 300 : 3600, () => xeroPLCombined(env, from, to, trackingIdsList));
+    await noteSync(env, 'accounting');
+  } catch (e) { out.accountingError = String(e && e.message || e); }
   if (venue === 'guncotton') {
     try {
       const b = await bepozRangeStats(env, from, to);
@@ -1047,9 +1054,11 @@ async function apiMetrics(env, url) {
   const [accStatus, posStatus, rosterStatus] = await Promise.all([accountingStatus(env), squareStatus(env), roublerStatus(env)]);
   const periods = {};
   const budget = { left: 10 };
-  periods.cur = await slot(env, c.from, c.to, trackingIdsList, venue, budget);
-  periods.prev = p ? await slot(env, p.from, p.to, trackingIdsList, venue, budget) : null;
-  periods.yoy = y ? await slot(env, y.from, y.to, trackingIdsList, venue, budget) : null;
+  [periods.cur, periods.prev, periods.yoy] = await Promise.all([
+    slot(env, c.from, c.to, trackingIdsList, venue, budget),
+    p ? slot(env, p.from, p.to, trackingIdsList, venue, budget) : null,
+    y ? slot(env, y.from, y.to, trackingIdsList, venue, budget) : null
+  ]);
   return json({
     generatedAt: new Date().toISOString(),
     venue: venue || 'combined',
