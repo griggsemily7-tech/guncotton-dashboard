@@ -243,19 +243,37 @@ let fetchGen = 0;
 // Switching venue or period shows what was loaded in the last few minutes straight away; the automatic
 // 20-second refresh always fetches fresh figures (and updates what's remembered).
 let FRESH_FETCH = false;
+let OPENING = true; // first view after opening the dashboard: show the last-known figures instantly
 const _rawFetch = window.fetch.bind(window);
 const apiCache = new Map();
+const PERSIST_KEY = 'vd_apicache_v1';
+const persistable = (key)=> !key.startsWith('/api/roubler') && !key.startsWith('/api/square-breakdown');
+try {
+  const saved = JSON.parse(localStorage.getItem(PERSIST_KEY) || '{}');
+  Object.entries(saved).forEach(([k, v])=>{ if(v && Date.now() - v.t < 6*60*60*1000) apiCache.set(k, v); });
+} catch(e){}
+let persistTimer = null;
+function persistApiCache(){
+  clearTimeout(persistTimer);
+  persistTimer = setTimeout(()=>{
+    try {
+      const out = {}; let size = 0;
+      [...apiCache.entries()].sort((a,b)=>b[1].t-a[1].t).forEach(([k,v])=>{ if(persistable(k) && size + v.body.length < 1500000){ out[k] = v; size += v.body.length; } });
+      localStorage.setItem(PERSIST_KEY, JSON.stringify(out));
+    } catch(e){}
+  }, 1000);
+}
 window.fetch = (input, opts = {}) => {
   const u = typeof input === 'string' ? input : input.url;
   if ((opts.method || 'GET').toUpperCase() !== 'GET' || !String(u).startsWith('/api/')) return _rawFetch(input, opts);
   const key = String(u).replace(/[&?]_=\d+/, '');
   const hit = apiCache.get(key);
-  if (!FRESH_FETCH && hit && Date.now() - hit.t < 5 * 60 * 1000)
+  if (!FRESH_FETCH && hit && Date.now() - hit.t < (OPENING ? 6 * 60 * 60 * 1000 : 5 * 60 * 1000))
     return Promise.resolve(new Response(hit.body, { status: 200, headers: { 'content-type': 'application/json' } }));
   return _rawFetch(input, opts).then((res) => {
     if (res.ok) res.clone().text().then((b) => {
       // Don't remember half-finished answers ("still adding up…") or errors.
-      if (!/"pending":[1-9]/.test(b) && !/"error":/.test(b)) apiCache.set(key, { body: b, t: Date.now() });
+      if (!/"pending":[1-9]/.test(b) && !/"error":/.test(b)) { apiCache.set(key, { body: b, t: Date.now() }); persistApiCache(); }
     }).catch(() => {});
     return res;
   });
@@ -1024,6 +1042,7 @@ function saveSettings(){
 async function logout(){ await fetch('/api/logout',{method:'POST'}); location.reload(); }
 
 loadSettings();
+setTimeout(()=>{ OPENING = false; fetchData(true); }, 400); // then fetch fresh figures straight away
 const savedPeriod = localStorage.getItem('vd_period');
 if (savedPeriod) document.getElementById('period').value = savedPeriod;
 if (savedPeriod === 'custom') { document.getElementById('customDate').style.display = 'inline-block'; customDay(); }
