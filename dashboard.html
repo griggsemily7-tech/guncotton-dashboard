@@ -61,6 +61,16 @@
   .dnote{color:var(--muted);font-size:13px;padding:6px 0}
   .dhead{color:var(--muted);font-size:12px;padding:4px 0 6px}
   .crow{cursor:pointer}
+  .srow{display:grid;grid-template-columns:minmax(0,1fr) 80px 100px 100px;align-items:baseline;padding:9px 6px;border-bottom:1px solid rgba(255,255,255,.06);font-variant-numeric:tabular-nums;font-size:15px;border-radius:6px}
+  .srow span:not(:first-child){text-align:right}
+  .srow:nth-child(even){background:rgba(255,255,255,.025)}
+  .srow:hover{background:rgba(255,255,255,.08)}
+  .shead{display:grid;grid-template-columns:minmax(0,1fr) 80px 100px 100px;padding:4px 6px;color:var(--muted);font-size:12px;letter-spacing:.04em;text-transform:uppercase}
+  .shead span:not(:first-child){text-align:right}
+  .sgroup{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin:18px 6px 4px;font-weight:700;font-size:16px}
+  .sgroup:first-child{margin-top:0}
+  .sgroup small{font-weight:400;color:var(--muted);font-size:13px;text-align:right}
+  @media(max-width:600px){.srow,.shead{grid-template-columns:minmax(0,1fr) 50px 64px 70px;font-size:13px}}
   .citems{display:none;padding-left:16px}
   .citems .prow{font-size:12px;color:var(--muted)}
   .fhead{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text,#e5e7eb);padding:10px 0 2px}
@@ -104,6 +114,10 @@
   </select>
   <input type="date" id="customDate" style="display:none;margin-left:8px;padding:4px 6px;border-radius:6px;font:inherit" onchange="if(this.value){localStorage.setItem('vd_customdate',this.value);fetchData();}">
   <div class="cards" id="cards"></div>
+  <div id="staffSection" style="margin-top:20px;display:none">
+    <div style="font-size:12px;color:var(--muted);letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px">Staff costs · from Roubler</div>
+    <div id="staff" style="background:var(--card);border-radius:12px;padding:16px"></div>
+  </div>
   <div id="goalsSection" style="margin-top:20px;display:none">
     <div id="goalsTitle" style="font-size:12px;color:var(--muted);letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px">Sales goals</div>
     <div id="goals" style="background:var(--card);border-radius:12px;padding:16px"></div>
@@ -806,6 +820,34 @@ function renderBanner(data){
   else { b.innerHTML=''; }
 }
 
+// Staff costs panel: one clear row per person (hours, cost per hour, total), grouped for Gun Cotton into
+// front of house and kitchen with a subtotal for each.
+function renderStaff(rb, revenue){
+  const sec = document.getElementById('staffSection'), el = document.getElementById('staff');
+  if(!rb || !rb.people || !rb.people.length){ sec.style.display = 'none'; return; }
+  sec.style.display = 'block';
+  const pv = document.getElementById('period').value;
+  const multiDay = pv !== 'today' && pv !== 'custom';
+  const money = (n)=> '$'+Math.round(n).toLocaleString();
+  const pct = (n)=> revenue ? ' · '+(n/(revenue*GST)*100).toFixed(1)+'% of sales' : '';
+  const head = '<div class="shead"><span>Name</span><span>Hours</span><span>Per hour</span><span>Total</span></div>';
+  const row = (p)=> '<div class="srow"><span>'+escHtml(p.name)+(p.estimated?' <span title="Includes an estimate – timesheet not costed yet" style="color:var(--warn)">*</span>':'')+'</span>'+
+    '<span>'+(Math.round(p.hours*100)/100)+'</span><span>$'+p.perHour.toFixed(2)+'</span><span><b>'+money(p.cost)+'</b></span></div>';
+  const group = (title, list, total)=> list.length ? '<div class="sgroup"><span>'+title+'</span><small>'+money(total.wages)+' · '+(Math.round(total.hours*10)/10)+' hrs'+pct(total.wages)+'</small></div>'+head+'<div>'+list.map(row).join('')+'</div>' : '';
+  let html = '';
+  if(currentVenue==='guncotton' && rb.sections){
+    html += group('Front of house', rb.people.filter(p=>p.section==='foh'||p.section==='both'), rb.sections.foh);
+    html += group('Kitchen (incl. dishes)', rb.people.filter(p=>p.section==='kitchen'), rb.sections.kitchen);
+  } else {
+    html += group('Staff', rb.people, rb);
+  }
+  const notes = ['Incl. super & salaried leave'];
+  if(multiDay) notes.push('totals for the whole period, average per hour');
+  if(rb.rostered) notes.push('today counts shifts so far, from the roster');
+  if(rb.people.some(p=>p.estimated)) notes.push('* includes an estimate (timesheet not costed yet)');
+  el.innerHTML = html + '<div style="color:var(--muted);font-size:12px;margin:12px 6px 0">'+notes.join(' · ')+'</div>';
+}
+
 function renderCards(data){
   const cur = data.periods.cur || {};
   const prev = data.periods.prev || {};
@@ -882,28 +924,9 @@ function renderCards(data){
     if (rb.rostered) bits.push("today so far, from the roster");
     if (rb.estimated > 0.5) bits.push('$'+Math.round(rb.estimated).toLocaleString()+' estimated (timesheets not approved yet)');
     targetLines.wagepct = (targetLines.wagepct ? targetLines.wagepct+'<br>' : '') + bits.join(' · ');
-    // Gun Cotton: front of house vs kitchen (chefs, kitchen hands and dishes), each as a % of revenue.
-    if (currentVenue==='guncotton' && rb.sections && revenue) {
-      const line = (name, b)=> '<div style="display:flex;justify-content:space-between;gap:8px"><span>'+name+'</span><span><b>'+fmtPct(b.wages/(revenue*GST))+'</b> · $'+Math.round(b.wages).toLocaleString()+'</span></div>';
-      targetLines.wagepct += '<details style="margin-top:6px"><summary style="cursor:pointer">Front of house vs kitchen</summary>'+
-        line('Front of house', rb.sections.foh)+line('Kitchen (incl. dishes)', rb.sections.kitchen)+'</details>';
-    }
-    // Staff breakdown: each person's hours, cost per hour and total cost (incl. super & salaried leave).
-    if (rb.people && rb.people.length) {
-      const pv = document.getElementById('period').value;
-      const multiDay = pv !== 'today' && pv !== 'custom';
-      const sec = (x)=> currentVenue!=='guncotton' || !x ? '' : ' <span style="color:var(--muted)">('+(x==='foh'?'FOH':x==='kitchen'?'Kitchen':'FOH + Kitchen')+')</span>';
-      const rows = rb.people.map(p=>'<div style="display:grid;grid-template-columns:minmax(0,1fr) 52px 70px 72px;gap:6px;align-items:baseline">'+
-        '<span>'+escHtml(p.name)+sec(p.section)+(p.estimated?' <span title="Includes an estimate – timesheet not costed yet" style="color:var(--warn)">*</span>':'')+'</span>'+
-        '<span style="text-align:right">'+(Math.round(p.hours*100)/100)+'h</span>'+
-        '<span style="text-align:right">$'+p.perHour.toFixed(2)+'/h</span>'+
-        '<span style="text-align:right"><b>$'+Math.round(p.cost).toLocaleString()+'</b></span></div>').join('');
-      targetLines.wagepct += '<details style="margin-top:6px"><summary style="cursor:pointer">Staff breakdown'+(multiDay?' (whole period)':'')+'</summary>'+
-        '<div style="display:grid;grid-template-columns:minmax(0,1fr) 52px 70px 72px;gap:6px;color:var(--muted);font-size:11px;margin-top:4px"><span>Name</span><span style="text-align:right">Hours</span><span style="text-align:right">Per hour</span><span style="text-align:right">Total</span></div>'+
-        '<div style="max-height:260px;overflow:auto">'+rows+'</div>'+
-        '<div style="color:var(--muted);font-size:11px;margin-top:4px">Incl. super & salaried leave'+(rb.rostered?' · today counts shifts so far':'')+(rb.people.some(p=>p.estimated)?' · * includes an estimate':'')+'</div></details>';
-    }
+    targetLines.wagepct += '<br><a href="#staffSection" style="color:inherit">See staff costs ↓</a>';
   }
+  renderStaff(rb, revenue);
   if (!isNaN(cogsTarget) && cogsPct != null) {
     const diff = cogsPct - cogsTarget;
     targetLines.cogs = diff<=0 ? 'Target '+cogsTarget+'% ✓' : 'Target '+cogsTarget+'% · '+diff.toFixed(1)+' pts over';
