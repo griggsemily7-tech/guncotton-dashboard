@@ -517,13 +517,21 @@ function roublerClassify(locName, posName, mainPos, empName) {
   const kitchen = /kitchen/i.test(loc) || /chef|cook|kitchen|dish/i.test(pos) || (!pos && /chef|cook|kitchen|dish/i.test(main));
   return { venue: 'guncotton', section: kitchen ? 'kitchen' : 'foh' };
 }
+const ROUBLER_EMP_MEMO = { t: 0, v: null };
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
   return cached(env, 'rbw8:' + from + ':' + to, incToday ? 300 : 3600, async () => {
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
-    const emp = await roublerGraphQL(env, { operationName: 'Emp', query: 'query Emp { employees { id fullName payBasis payType position { name } person { dateOfBirth } } }' }, {}, token);
+    const inclToday = to >= today && from <= today;
+    // The staff list rarely changes, so it's kept in this server's memory for up to an hour (never saved to storage).
+    const empP = (ROUBLER_EMP_MEMO.t && Date.now() - ROUBLER_EMP_MEMO.t < 3600000) ? Promise.resolve(ROUBLER_EMP_MEMO.v)
+      : roublerGraphQL(env, { operationName: 'Emp', query: 'query Emp { employees { id fullName payBasis payType position { name } person { dateOfBirth } } }' }, {}, token)
+          .then((v) => { ROUBLER_EMP_MEMO.v = v; ROUBLER_EMP_MEMO.t = Date.now(); return v; });
+    const tsP = roublerGraphQL(env, { operationName: 'Ts', query: 'query Ts($s: DateTime!, $e: DateTime!) { timesheets(startTime: $s, endTime: $e, includePending: true) { startTime hours cost status employee { id fullName } location { name } position { name } } }' }, { s: start, e: end }, token);
+    const shP = inclToday ? roublerGraphQL(env, { operationName: 'Sh', query: 'query Sh($s: DateTime!, $e: DateTime!) { shifts(startTime: $s, endTime: $e, includeCostings: true) { startTime endTime hours cost published employee { id fullName } location { name } position { name } } }' }, { s: today + 'T00:00:00+10:00', e: today + 'T23:59:59+10:00' }, token) : Promise.resolve(null);
+    const [emp, ts, shRes] = await Promise.all([empP, tsP, shP]);
     const mainPos = {}, info = {};
     ((emp && emp.data && emp.data.employees) || []).forEach((e) => {
       mainPos[e.id] = e.position && e.position.name;
@@ -535,12 +543,11 @@ async function roublerWages(env, from, to) {
       const [y, m, dd] = d.split('-').map(Number), [Y, M, D] = dateStr.split('-').map(Number);
       return (Y - y - ((M < m || (M === m && D < dd)) ? 1 : 0)) < 18;
     };
-    const ts = await roublerGraphQL(env, { operationName: 'Ts', query: 'query Ts($s: DateTime!, $e: DateTime!) { timesheets(startTime: $s, endTime: $e, includePending: true) { startTime hours cost status employee { id fullName } location { name } position { name } } }' }, { s: start, e: end }, token);
     let rows = ((ts && ts.data && ts.data.timesheets) || []).map((t) => ({ ...t, kind: 'timesheet' }))
       .filter((t) => toBrisbane(new Date(t.startTime)).dateStr < today);
     // Today hasn't been clocked off yet, so today uses the roster (rostered shifts and their cost).
     if (to >= today && from <= today) {
-      const sh = await roublerGraphQL(env, { operationName: 'Sh', query: 'query Sh($s: DateTime!, $e: DateTime!) { shifts(startTime: $s, endTime: $e, includeCostings: true) { startTime endTime hours cost published employee { id fullName } location { name } position { name } } }' }, { s: today + 'T00:00:00+10:00', e: today + 'T23:59:59+10:00' }, token);
+      const sh = shRes;
       // Only count the part of each shift that has happened so far, so today's wage % compares wages so far
       // with sales so far (not the whole day's roster against a half-finished day of sales).
       const nowMs = Date.now();
@@ -1312,8 +1319,8 @@ export default {
       const cur = url.searchParams.get('cur'), prev = url.searchParams.get('prev');
       if (!ok(cur)) return json({ error: 'bad range' }, 400);
       try {
-        const c = await roublerWages(env, ...cur.split(':'));
-        const p = ok(prev) ? await roublerWages(env, ...prev.split(':')) : null;
+        await roublerRefresh(env);
+        const [c, p] = await Promise.all([roublerWages(env, ...cur.split(':')), ok(prev) ? roublerWages(env, ...prev.split(':')) : null]);
         return json({ cur: c, prev: p });
       } catch (e) { return json({ error: String(e && e.message || e) }); }
     }
