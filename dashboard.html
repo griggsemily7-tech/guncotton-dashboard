@@ -888,6 +888,21 @@ function renderCards(data){
       targetLines.wagepct += '<details style="margin-top:6px"><summary style="cursor:pointer">Front of house vs kitchen</summary>'+
         line('Front of house', rb.sections.foh)+line('Kitchen (incl. dishes)', rb.sections.kitchen)+'</details>';
     }
+    // Staff breakdown: each person's hours, cost per hour and total cost (incl. super & salaried leave).
+    if (rb.people && rb.people.length) {
+      const pv = document.getElementById('period').value;
+      const multiDay = pv !== 'today' && pv !== 'custom';
+      const sec = (x)=> currentVenue!=='guncotton' || !x ? '' : ' <span style="color:var(--muted)">('+(x==='foh'?'FOH':x==='kitchen'?'Kitchen':'FOH + Kitchen')+')</span>';
+      const rows = rb.people.map(p=>'<div style="display:grid;grid-template-columns:minmax(0,1fr) 52px 70px 72px;gap:6px;align-items:baseline">'+
+        '<span>'+escHtml(p.name)+sec(p.section)+(p.estimated?' <span title="Includes an estimate – timesheet not costed yet" style="color:var(--warn)">*</span>':'')+'</span>'+
+        '<span style="text-align:right">'+(Math.round(p.hours*100)/100)+'h</span>'+
+        '<span style="text-align:right">$'+p.perHour.toFixed(2)+'/h</span>'+
+        '<span style="text-align:right"><b>$'+Math.round(p.cost).toLocaleString()+'</b></span></div>').join('');
+      targetLines.wagepct += '<details style="margin-top:6px"><summary style="cursor:pointer">Staff breakdown'+(multiDay?' (whole period)':'')+'</summary>'+
+        '<div style="display:grid;grid-template-columns:minmax(0,1fr) 52px 70px 72px;gap:6px;color:var(--muted);font-size:11px;margin-top:4px"><span>Name</span><span style="text-align:right">Hours</span><span style="text-align:right">Per hour</span><span style="text-align:right">Total</span></div>'+
+        '<div style="max-height:260px;overflow:auto">'+rows+'</div>'+
+        '<div style="color:var(--muted);font-size:11px;margin-top:4px">Incl. super & salaried leave'+(rb.rostered?' · today counts shifts so far':'')+(rb.people.some(p=>p.estimated)?' · * includes an estimate':'')+'</div></details>';
+    }
   }
   if (!isNaN(cogsTarget) && cogsPct != null) {
     const diff = cogsPct - cogsTarget;
