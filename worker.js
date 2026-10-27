@@ -519,7 +519,7 @@ function roublerClassify(locName, posName, mainPos, empName) {
 }
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw7:' + from + ':' + to, incToday ? 300 : 3600, async () => {
+  return cached(env, 'rbw8:' + from + ':' + to, incToday ? 300 : 3600, async () => {
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
@@ -574,19 +574,25 @@ async function roublerWages(env, from, to) {
     // Second pass: add super (and, for salaried staff, their paid leave) and total it up.
     counted.forEach(({ r, id, cls, f, cost, est, day, key }) => {
       const gotSuper = !under18(id, day) || weekHrs[key] > 30;
-      let total = cost * f * (gotSuper ? 1 + superRateOn(day) : 1);
-      if (info[id] && info[id].salaried) total *= SALARY_LEAVE_FACTOR;
+      const salaried = !!(info[id] && info[id].salaried);
+      // Pay itself, then super on top, then (salaried only) the share of annual leave and sick pay.
+      const base = cost * f;
+      const sup = gotSuper ? base * superRateOn(day) : 0;
+      const leave = salaried ? (base + sup) * (SALARY_LEAVE_FACTOR - 1) : 0;
+      const total = base + sup + leave;
       const hrs = (r.hours || 0) * f;
       const add = (b) => { b.wages += total; b.hours += hrs; if (est) b.estimated += total; if (r.kind === 'shift') b.rostered = true; };
       add(out[cls.venue]);
       if (cls.venue === 'guncotton') add(out.guncotton.sections[cls.section]);
       // Per-person totals for the staff breakdown on the Wage % card (kept only as long as the totals are).
       const ppl = people[cls.venue] || (people[cls.venue] = {});
-      const pr = ppl[id] || (ppl[id] = { name: (r.employee && r.employee.fullName || 'Unknown').replace(/\s+/g, ' ').trim(), hours: 0, cost: 0, estimated: false, sections: {} });
-      pr.hours += hrs; pr.cost += total; if (est) pr.estimated = true; if (cls.section) pr.sections[cls.section] = true;
+      const pr = ppl[id] || (ppl[id] = { name: (r.employee && r.employee.fullName || 'Unknown').replace(/\s+/g, ' ').trim(), hours: 0, cost: 0, base: 0, sup: 0, leave: 0, salaried, estimated: false, sections: {} });
+      pr.hours += hrs; pr.cost += total; pr.base += base; pr.sup += sup; pr.leave += leave;
+      if (est) pr.estimated = true; if (cls.section) pr.sections[cls.section] = true;
     });
     Object.keys(people).forEach((v) => {
       out[v].people = Object.values(people[v]).map((p) => ({ name: p.name, hours: p.hours, cost: p.cost, perHour: p.hours ? p.cost / p.hours : 0,
+        salaried: p.salaried, basePerHour: p.hours ? p.base / p.hours : 0, superPerHour: p.hours ? p.sup / p.hours : 0, leavePerHour: p.hours ? p.leave / p.hours : 0,
         estimated: p.estimated, section: Object.keys(p.sections).length === 1 ? Object.keys(p.sections)[0] : (Object.keys(p.sections).length ? 'both' : null) }))
         .sort((a, b) => b.cost - a.cost);
     });
