@@ -209,11 +209,19 @@ async function roublerGraphQL(env, query, variables, accessToken) {
 }
 // Small generic cache for slow, rarely-changing status checks — avoids hitting Square/Roubler
 // on every single dashboard load just to show a "connected" badge.
+// Short-term memory for slow answers. Kept in this server's memory first (free and instant), and in storage
+// as a backup. If storage is unavailable (e.g. the daily write limit is reached), the dashboard keeps working.
+const MEMO = new Map();
 async function cached(env, key, ttlSeconds, fn) {
-  const hit = await env.TOKENS.get(key);
-  if (hit) return JSON.parse(hit);
+  const m = MEMO.get(key);
+  if (m && Date.now() < m.exp) return m.v;
+  let hit = null;
+  try { hit = await env.TOKENS.get(key); } catch (e) {}
+  if (hit) { const v = JSON.parse(hit); MEMO.set(key, { v, exp: Date.now() + ttlSeconds * 1000 }); return v; }
   const value = await fn();
-  await env.TOKENS.put(key, JSON.stringify(value), { expirationTtl: ttlSeconds });
+  MEMO.set(key, { v: value, exp: Date.now() + ttlSeconds * 1000 });
+  if (MEMO.size > 500) MEMO.delete(MEMO.keys().next().value);
+  try { await env.TOKENS.put(key, JSON.stringify(value), { expirationTtl: Math.max(60, ttlSeconds) }); } catch (e) {}
   return value;
 }
 async function roublerStatus(env) {
