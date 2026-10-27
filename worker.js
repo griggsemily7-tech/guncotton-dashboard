@@ -492,7 +492,17 @@ async function squarePaymentStaff(env, paymentId) {
 const ROUBLER_DIRECTORS = ['ian griggs'];
 // Superannuation added on top of Roubler's wage cost (Roubler's cost doesn't include it). Under-18s only
 // get super for a week in which they work more than 30 hours.
-const SUPER_RATE = 0.12;
+// Super guarantee rate by date (ATO). Each shift uses the rate for the day it was worked, so past
+// periods use the rate that applied then. If the government changes it, add a new line at the top.
+const SUPER_RATES = [
+  ['2025-07-01', 0.12],   // 12% from 1 July 2025 (final legislated step; no further rises scheduled)
+  ['2024-07-01', 0.115],
+  ['2023-07-01', 0.11],
+  ['2022-07-01', 0.105],
+  ['2021-07-01', 0.10],
+  ['2000-01-01', 0.095]
+];
+const superRateOn = (dateStr) => (SUPER_RATES.find(([from]) => dateStr >= from) || SUPER_RATES[SUPER_RATES.length - 1])[1];
 // Salaried staff are paid on their annual leave (4 weeks) and sick days (10) too, but don't work those
 // days, so each worked day really costs 260 ÷ 230 of the day's salary.
 const SALARY_LEAVE_FACTOR = 260 / 230;
@@ -509,7 +519,7 @@ function roublerClassify(locName, posName, mainPos, empName) {
 }
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw6:' + from + ':' + to, incToday ? 300 : 3600, async () => {
+  return cached(env, 'rbw7:' + from + ':' + to, incToday ? 300 : 3600, async () => {
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
@@ -564,7 +574,7 @@ async function roublerWages(env, from, to) {
     // Second pass: add super (and, for salaried staff, their paid leave) and total it up.
     counted.forEach(({ r, id, cls, f, cost, est, day, key }) => {
       const gotSuper = !under18(id, day) || weekHrs[key] > 30;
-      let total = cost * f * (gotSuper ? 1 + SUPER_RATE : 1);
+      let total = cost * f * (gotSuper ? 1 + superRateOn(day) : 1);
       if (info[id] && info[id].salaried) total *= SALARY_LEAVE_FACTOR;
       const hrs = (r.hours || 0) * f;
       const add = (b) => { b.wages += total; b.hours += hrs; if (est) b.estimated += total; if (r.kind === 'shift') b.rostered = true; };
