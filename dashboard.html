@@ -831,7 +831,16 @@ function renderStaff(rb, revenue){
   const money = (n)=> '$'+Math.round(n).toLocaleString();
   const pct = (n)=> revenue ? ' · '+(n/(revenue*GST)*100).toFixed(1)+'% of sales' : '';
   const head = '<div class="shead"><span>Name</span><span>Hours</span><span>Per hour</span><span>Total</span></div>';
-  const row = (p)=> '<div class="srow"><span>'+escHtml(p.name)+(p.estimated?' <span title="Includes an estimate – timesheet not costed yet" style="color:var(--warn)">*</span>':'')+'</span>'+
+  // Under each name: how their hourly cost is made up (pay + super, and for salaried staff their leave).
+  const parts = (p)=>{
+    if(p.basePerHour==null) return '';
+    const bits = ['$'+p.basePerHour.toFixed(2)+' pay'];
+    if(p.superPerHour > 0.005) bits.push('$'+p.superPerHour.toFixed(2)+' super');
+    else bits.push('no super (under 18)');
+    if(p.salaried) bits.push('$'+p.leavePerHour.toFixed(2)+' holiday & sick pay');
+    return '<div style="font-size:12px;color:var(--muted);margin-top:2px">'+(p.salaried?'Salary · ':'')+bits.join(' + ')+' per hour</div>';
+  };
+  const row = (p)=> '<div class="srow"><span>'+escHtml(p.name)+(p.estimated?' <span title="Includes an estimate – timesheet not costed yet" style="color:var(--warn)">*</span>':'')+parts(p)+'</span>'+
     '<span>'+(Math.round(p.hours*100)/100)+'</span><span>$'+p.perHour.toFixed(2)+'</span><span><b>'+money(p.cost)+'</b></span></div>';
   const group = (title, list, total)=> list.length ? '<div class="sgroup"><span>'+title+'</span><small>'+money(total.wages)+' · '+(Math.round(total.hours*10)/10)+' hrs'+pct(total.wages)+'</small></div>'+head+'<div>'+list.map(row).join('')+'</div>' : '';
   let html = '';
