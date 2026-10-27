@@ -61,17 +61,17 @@
   .dnote{color:var(--muted);font-size:13px;padding:6px 0}
   .dhead{color:var(--muted);font-size:12px;padding:4px 0 6px}
   .crow{cursor:pointer}
-  .srow{display:grid;grid-template-columns:minmax(140px,1fr) 64px 92px 80px 104px 100px;column-gap:14px;align-items:baseline;padding:9px 6px;border-bottom:1px solid rgba(255,255,255,.06);font-variant-numeric:tabular-nums;font-size:15px;border-radius:6px}
+  .srow{display:grid;grid-template-columns:minmax(140px,1fr) 56px 88px 70px 100px 104px 92px;column-gap:14px;align-items:baseline;padding:9px 6px;border-bottom:1px solid rgba(255,255,255,.06);font-variant-numeric:tabular-nums;font-size:15px;border-radius:6px}
   .srow span:not(:first-child){text-align:right}
   .srow:nth-child(even){background:rgba(255,255,255,.025)}
   .srow:hover{background:rgba(255,255,255,.08)}
-  .shead{display:grid;grid-template-columns:minmax(140px,1fr) 64px 92px 80px 104px 100px;column-gap:14px;padding:4px 6px;color:var(--muted);font-size:12px;letter-spacing:.04em;text-transform:uppercase}
+  .shead{display:grid;grid-template-columns:minmax(140px,1fr) 56px 88px 70px 100px 104px 92px;column-gap:14px;padding:4px 6px;color:var(--muted);font-size:12px;letter-spacing:.04em;text-transform:uppercase}
   .shead span:not(:first-child){text-align:right}
   .sgroup{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin:18px 6px 4px;font-weight:700;font-size:16px}
   .sgroup:first-child{margin-top:0}
   .sgroup small{font-weight:400;color:var(--muted);font-size:13px;text-align:right}
   .swrap{overflow-x:auto}
-  .swrap>div{min-width:620px}
+  .swrap>div{min-width:720px}
   @media(max-width:600px){.srow,.shead{font-size:13px}}
   .citems{display:none;padding-left:16px}
   .citems .prow{font-size:12px;color:var(--muted)}
@@ -832,7 +832,7 @@ function renderStaff(rb, revenue){
   const multiDay = pv !== 'today' && pv !== 'custom';
   const money = (n)=> '$'+Math.round(n).toLocaleString();
   const pct = (n)=> revenue ? ' · '+(n/(revenue*GST)*100).toFixed(1)+'% of sales' : '';
-  const head = '<div class="shead"><span>Name</span><span>Hours</span><span>Hourly rate</span><span>Super</span><span>Holiday &amp; sick</span><span>Total cost</span></div>';
+  const head = '<div class="shead"><span>Name</span><span>Hours</span><span>Hourly rate</span><span>Super</span><span>Holiday &amp; sick</span><span>Total per hour</span><span>Total cost</span></div>';
   // Hourly rate, super and holiday & sick pay are per hour; Total cost is everything for their hours.
   const ph = (n)=> '$'+(n||0).toFixed(2);
   const row = (p)=> '<div class="srow"><span>'+escHtml(p.name)+(p.salaried?' <span style="color:var(--muted);font-size:12px">salary</span>':'')+
@@ -841,6 +841,7 @@ function renderStaff(rb, revenue){
     '<span>'+ph(p.basePerHour)+'</span>'+
     '<span>'+(p.superPerHour > 0.005 ? ph(p.superPerHour) : '<span style="color:var(--muted)" title="Under 18 – no super this week">–</span>')+'</span>'+
     '<span>'+(p.salaried ? ph(p.leavePerHour) : '<span style="color:var(--muted)">–</span>')+'</span>'+
+    '<span><b>'+ph(p.perHour)+'</b></span>'+
     '<span><b>'+money(p.cost)+'</b></span></div>';
   const group = (title, list, total)=> list.length ? '<div class="sgroup"><span>'+title+'</span><small>'+money(total.wages)+' · '+(Math.round(total.hours*10)/10)+' hrs'+pct(total.wages)+'</small></div><div class="swrap"><div>'+head+list.map(row).join('')+'</div></div>' : '';
   let html = '';
@@ -850,7 +851,7 @@ function renderStaff(rb, revenue){
   } else {
     html += group('Staff', rb.people, rb);
   }
-  const notes = ['Hourly rate, super and holiday & sick pay are per hour', 'Total cost = all three × hours', '– = not applicable (under 18 / not salaried)'];
+  const notes = ['Hourly rate, super and holiday & sick pay are per hour', 'Total per hour = rate + super + holiday & sick', 'Total cost = total per hour × hours', '– = not applicable (under 18 / not salaried)'];
   if(multiDay) notes.push('totals for the whole period, average per hour');
   if(rb.rostered) notes.push('today counts shifts so far, from the roster');
   if(rb.people.some(p=>p.estimated)) notes.push('* includes an estimate (timesheet not costed yet)');
