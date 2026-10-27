@@ -509,7 +509,7 @@ function roublerClassify(locName, posName, mainPos, empName) {
 }
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw5:' + from + ':' + to, incToday ? 300 : 3600, async () => {
+  return cached(env, 'rbw6:' + from + ':' + to, incToday ? 300 : 3600, async () => {
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
@@ -548,7 +548,7 @@ async function roublerWages(env, from, to) {
     const blank = () => ({ wages: 0, hours: 0, estimated: 0, rostered: false });
     const out = { doughgirlz: blank(), guncotton: { ...blank(), sections: { foh: blank(), kitchen: blank() } } };
     // First pass: each counted shift's base cost, its day and week, so under-18s' weekly hours are known.
-    const counted = [], weekHrs = {};
+    const counted = [], weekHrs = {}, people = {};
     const weekOf = (dateStr) => { const d = new Date(dateStr + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.toISOString().slice(0, 10); };
     rows.forEach((r) => {
       const id = r.employee && r.employee.id;
@@ -570,6 +570,15 @@ async function roublerWages(env, from, to) {
       const add = (b) => { b.wages += total; b.hours += hrs; if (est) b.estimated += total; if (r.kind === 'shift') b.rostered = true; };
       add(out[cls.venue]);
       if (cls.venue === 'guncotton') add(out.guncotton.sections[cls.section]);
+      // Per-person totals for the staff breakdown on the Wage % card (kept only as long as the totals are).
+      const ppl = people[cls.venue] || (people[cls.venue] = {});
+      const pr = ppl[id] || (ppl[id] = { name: (r.employee && r.employee.fullName || 'Unknown').replace(/\s+/g, ' ').trim(), hours: 0, cost: 0, estimated: false, sections: {} });
+      pr.hours += hrs; pr.cost += total; if (est) pr.estimated = true; if (cls.section) pr.sections[cls.section] = true;
+    });
+    Object.keys(people).forEach((v) => {
+      out[v].people = Object.values(people[v]).map((p) => ({ name: p.name, hours: p.hours, cost: p.cost, perHour: p.hours ? p.cost / p.hours : 0,
+        estimated: p.estimated, section: Object.keys(p.sections).length === 1 ? Object.keys(p.sections)[0] : (Object.keys(p.sections).length ? 'both' : null) }))
+        .sort((a, b) => b.cost - a.cost);
     });
     return out;
   });
