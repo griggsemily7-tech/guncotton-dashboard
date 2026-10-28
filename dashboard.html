@@ -850,7 +850,7 @@ function renderStaff(rb, revenue){
   const multiDay = pv !== 'today' && pv !== 'custom';
   const money = (n)=> '$'+Math.round(n).toLocaleString();
   const pct = (n)=> revenue ? ' · '+(n/(revenue*GST)*100).toFixed(1)+'% of sales' : '';
-  const head = '<div class="shead"><span>Name</span><span>Hours</span><span>Hourly rate</span><span>Super</span><span>Holiday &amp; sick</span><span>Total per hour</span><span>Total cost</span></div>';
+  const head = '<div class="shead"><span>Name</span><span>Hours</span><span title="Roubler&#39;s cost per hour worked – base rate plus any weekend, early-morning or other penalty rates">Pay per hour</span><span>Super</span><span>Holiday &amp; sick</span><span>Total per hour</span><span>Total cost</span></div>';
   // Hourly rate, super and holiday & sick pay are per hour; Total cost is everything for their hours.
   const ph = (n)=> '$'+(n||0).toFixed(2);
   const row = (p)=> '<div class="srow"><span>'+escHtml(p.name)+(p.salaried?' <span style="color:var(--muted);font-size:12px">salary</span>':'')+
@@ -869,7 +869,7 @@ function renderStaff(rb, revenue){
   } else {
     html += group('Staff', rb.people, rb);
   }
-  const notes = ['Hourly rate, super and holiday & sick pay are per hour', 'Total per hour = rate + super + holiday & sick', 'Total cost = total per hour × hours', '– = not applicable (under 18 / not salaried)'];
+  const notes = ['Pay per hour = Roubler\'s cost per hour worked, so it includes weekend, early-morning and other penalty rates (it can be a little above someone\'s base rate)', 'Super and holiday & sick are per hour', 'Total per hour = pay + super + holiday & sick', 'Total cost = total per hour × hours', '– = not applicable (under 18 / not salaried)'];
   if(multiDay) notes.push('totals for the whole period, average per hour');
   if(rb.rostered) notes.push('today counts shifts so far, from the roster');
   if(rb.people.some(p=>p.estimated)) notes.push('* includes an estimate (timesheet not costed yet)');
