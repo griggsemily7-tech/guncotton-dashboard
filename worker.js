@@ -526,9 +526,34 @@ function roublerClassify(locName, posName, mainPos, empName) {
   return { venue: 'guncotton', section: kitchen ? 'kitchen' : 'foh' };
 }
 const ROUBLER_EMP_MEMO = { t: 0, v: null };
+// Each person's actual hourly pay from the most recent finalised pay run (what Roubler's Payroll → Pay runs
+// screen shows). Used when a shift has no cost yet. Kept in this server's memory for 6 hours only.
+const PAYRUN_MEMO = { t: 0, v: null };
+async function roublerPayRunRates(env, token) {
+  if (PAYRUN_MEMO.t && Date.now() - PAYRUN_MEMO.t < 6 * 3600000) return PAYRUN_MEMO.v;
+  const out = {};
+  try {
+    const list = await roublerGraphQL(env, { operationName: 'Runs', query: 'query Runs { payRuns(showFinalised: true) { id endDate status } }' }, {}, token);
+    const runs = ((list && list.data && list.data.payRuns) || []).filter((r) => r.endDate).sort((a, b) => String(b.endDate).localeCompare(String(a.endDate))).slice(0, 2);
+    for (const run of runs) {
+      const d = await roublerGraphQL(env, { operationName: 'Run', query: 'query Run($id: ID!) { payRun(id: $id) { payItems { quantity unitAmount amount employee { id } payType { name } } } }' }, { id: run.id }, token);
+      ((d && d.data && d.data.payRun && d.data.payRun.payItems) || []).forEach((it) => {
+        const id = it.employee && it.employee.id, name = (it.payType && it.payType.name) || '';
+        // Hours actually worked (ordinary, weekend, overtime, public holiday…), not allowances, super, leave or bonuses.
+        if (!id || out[id + ':done'] || !(it.quantity > 0) || /super|allowance|leave|bonus|tax|reimburse|deduct/i.test(name)) return;
+        const x = out[id] || (out[id] = { c: 0, h: 0, base: null });
+        x.c += it.amount || 0; x.h += it.quantity;
+        if (/ordinary|base|normal/i.test(name) && it.unitAmount) x.base = it.unitAmount;
+      });
+      Object.keys(out).forEach((k) => { if (!k.includes(':')) out[k + ':done'] = true; }); // newest run wins
+    }
+  } catch (e) { /* pay runs not available: fall back to other estimates */ }
+  PAYRUN_MEMO.v = out; PAYRUN_MEMO.t = Date.now();
+  return out;
+}
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw9:' + from + ':' + to, incToday ? 300 : 3600, async () => {
+  return cached(env, 'rbw10:' + from + ':' + to, incToday ? 300 : 3600, async () => {
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
@@ -539,7 +564,7 @@ async function roublerWages(env, from, to) {
           .then((v) => { ROUBLER_EMP_MEMO.v = v; ROUBLER_EMP_MEMO.t = Date.now(); return v; });
     const tsP = roublerGraphQL(env, { operationName: 'Ts', query: 'query Ts($s: DateTime!, $e: DateTime!) { timesheets(startTime: $s, endTime: $e, includePending: true) { startTime hours cost status employee { id fullName } location { name } position { name } } }' }, { s: start, e: end }, token);
     const shP = inclToday ? roublerGraphQL(env, { operationName: 'Sh', query: 'query Sh($s: DateTime!, $e: DateTime!) { shifts(startTime: $s, endTime: $e, includeCostings: true) { startTime endTime hours cost published employee { id fullName } location { name } position { name } } }' }, { s: today + 'T00:00:00+10:00', e: today + 'T23:59:59+10:00' }, token) : Promise.resolve(null);
-    const [emp, ts, shRes] = await Promise.all([empP, tsP, shP]);
+    const [emp, ts, shRes, payRates] = await Promise.all([empP, tsP, shP, roublerPayRunRates(env, token)]);
     const mainPos = {}, info = {};
     ((emp && emp.data && emp.data.employees) || []).forEach((e) => {
       mainPos[e.id] = e.position && e.position.name;
@@ -576,6 +601,7 @@ async function roublerWages(env, from, to) {
     Object.entries(rate).forEach(([eid, x]) => { const L = info[eid] && info[eid].level; if (L && x.h) { const y = lvl[L] || (lvl[L] = { c: 0, h: 0 }); y.c += x.c; y.h += x.h; } });
     const estRate = (eid) => {
       const x = rate[eid]; if (x && x.h) return x.c / x.h;                     // their own costed shifts
+      const pr = payRates && payRates[eid]; if (pr && pr.h) return pr.c / pr.h;  // their latest pay run (actual pay per hour)
       const L = info[eid] && info[eid].level, y = L && lvl[L]; if (y && y.h) return y.c / y.h;  // others on the same pay level
       return avg;                                                                // everyone's average
     };
