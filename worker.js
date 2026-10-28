@@ -547,13 +547,13 @@ async function roublerPayRunRates(env, token) {
       });
       Object.keys(out).forEach((k) => { if (!k.includes(':')) out[k + ':done'] = true; }); // newest run wins
     }
-  } catch (e) { /* pay runs not available: fall back to other estimates */ }
-  PAYRUN_MEMO.v = out; PAYRUN_MEMO.t = Date.now();
+  } catch (e) { PAYRUN_MEMO.err = String(e && e.message || e); return out; }
+  if (Object.keys(out).length) { PAYRUN_MEMO.v = out; PAYRUN_MEMO.t = Date.now(); }
   return out;
 }
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw10:' + from + ':' + to, incToday ? 300 : 3600, async () => {
+  return cached(env, 'rbw11:' + from + ':' + to, incToday ? 300 : 3600, async () => {
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
@@ -1355,6 +1355,30 @@ export default {
         }
         return json({ date, orders: orders.length, ordersWithUnexplainedExtra: count, totalUnexplained: totalExtra / 100, examples: found });
       } catch (e) { return json({ error: String(e && e.message || e) }); }
+    }
+    if (path === '/api/roubler-payrun-check') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const res = { steps: [] };
+      try {
+        const token = await roublerRefresh(env);
+        const list = await roublerGraphQL(env, { operationName: 'Runs', query: 'query Runs { payRuns(showFinalised: true) { id endDate status } }' }, {}, token);
+        if (list && list.errors) res.steps.push({ step: 'list pay runs', errors: list.errors.map((e) => e.message) });
+        const runs = ((list && list.data && list.data.payRuns) || []);
+        res.payRunsFound = runs.length;
+        res.statuses = [...new Set(runs.map((r) => r.status))];
+        const latest = runs.filter((r) => r.endDate).sort((a, b) => String(b.endDate).localeCompare(String(a.endDate)))[0];
+        res.latestEndDate = latest ? latest.endDate : null;
+        if (latest) {
+          const d = await roublerGraphQL(env, { operationName: 'Run', query: 'query Run($id: ID!) { payRun(id: $id) { payItems { quantity unitAmount amount employee { id } payType { name } } } }' }, { id: latest.id }, token);
+          if (d && d.errors) res.steps.push({ step: 'read latest pay run', errors: d.errors.map((e) => e.message) });
+          const items = (d && d.data && d.data.payRun && d.data.payRun.payItems) || [];
+          res.payItemsInLatestRun = items.length;
+          res.peopleInLatestRun = new Set(items.map((i) => i.employee && i.employee.id)).size;
+          res.payTypeNames = [...new Set(items.map((i) => i.payType && i.payType.name))].slice(0, 40);
+        }
+      } catch (e) { res.error = String(e && e.message || e); }
+      res.lastLookupError = PAYRUN_MEMO.err || null;
+      return json(res);
     }
     if (path === '/api/roubler-wages') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
