@@ -854,7 +854,8 @@ function renderStaff(rb, revenue){
   // Hourly rate, super and holiday & sick pay are per hour; Total cost is everything for their hours.
   const ph = (n)=> '$'+(n||0).toFixed(2);
   const row = (p)=> '<div class="srow"><span>'+escHtml(p.name)+(p.salaried?' <span style="color:var(--muted);font-size:12px">salary</span>':'')+
-    (p.estimated?' <span title="Includes an estimate – timesheet not costed yet" style="color:var(--warn)">*</span>':'')+'</span>'+
+    (p.estimated?' <span title="Includes an estimate – timesheet not costed yet" style="color:var(--warn)">*</span>':'')+
+    (p.noClock?' <span title="Rostered but no timesheet (didn&#39;t clock in) – counted from the roster. Fix the timesheet in Roubler." style="display:inline-block;font-size:11px;font-weight:700;color:#FFFFFF;background:var(--warn);border-radius:4px;padding:0 5px">no clock-in'+(p.noClock>1?' ×'+p.noClock:'')+'</span>':'')+'</span>'+
     '<span>'+(Math.round(p.hours*100)/100)+'</span>'+
     '<span>'+ph(p.basePerHour)+'</span>'+
     '<span>'+(p.superPerHour > 0.005 ? ph(p.superPerHour) : '<span style="color:var(--muted)" title="Under 18 – no super this week">–</span>')+'</span>'+
@@ -873,6 +874,7 @@ function renderStaff(rb, revenue){
   if(multiDay) notes.push('totals for the whole period, average per hour');
   if(rb.rostered) notes.push('today counts shifts so far, from the roster');
   if(rb.people.some(p=>p.estimated)) notes.push('* includes an estimate (timesheet not costed yet)');
+  if(rb.people.some(p=>p.noClock)) notes.push('“no clock-in” = rostered but no timesheet, so their rostered shift is counted – fix the timesheet in Roubler so they get paid correctly');
   el.innerHTML = html + '<div style="color:var(--muted);font-size:12px;margin:12px 6px 0">'+notes.join(' · ')+'</div>';
 }
 
