@@ -528,14 +528,14 @@ function roublerClassify(locName, posName, mainPos, empName) {
 const ROUBLER_EMP_MEMO = { t: 0, v: null };
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw8:' + from + ':' + to, incToday ? 300 : 3600, async () => {
+  return cached(env, 'rbw9:' + from + ':' + to, incToday ? 300 : 3600, async () => {
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
     const inclToday = to >= today && from <= today;
     // The staff list rarely changes, so it's kept in this server's memory for up to an hour (never saved to storage).
     const empP = (ROUBLER_EMP_MEMO.t && Date.now() - ROUBLER_EMP_MEMO.t < 3600000) ? Promise.resolve(ROUBLER_EMP_MEMO.v)
-      : roublerGraphQL(env, { operationName: 'Emp', query: 'query Emp { employees { id fullName payBasis payType position { name } person { dateOfBirth } } }' }, {}, token)
+      : roublerGraphQL(env, { operationName: 'Emp', query: 'query Emp { employees { id fullName payBasis payType payLevel { id name } position { name } person { dateOfBirth } } }' }, {}, token)
           .then((v) => { ROUBLER_EMP_MEMO.v = v; ROUBLER_EMP_MEMO.t = Date.now(); return v; });
     const tsP = roublerGraphQL(env, { operationName: 'Ts', query: 'query Ts($s: DateTime!, $e: DateTime!) { timesheets(startTime: $s, endTime: $e, includePending: true) { startTime hours cost status employee { id fullName } location { name } position { name } } }' }, { s: start, e: end }, token);
     const shP = inclToday ? roublerGraphQL(env, { operationName: 'Sh', query: 'query Sh($s: DateTime!, $e: DateTime!) { shifts(startTime: $s, endTime: $e, includeCostings: true) { startTime endTime hours cost published employee { id fullName } location { name } position { name } } }' }, { s: today + 'T00:00:00+10:00', e: today + 'T23:59:59+10:00' }, token) : Promise.resolve(null);
@@ -544,7 +544,7 @@ async function roublerWages(env, from, to) {
     ((emp && emp.data && emp.data.employees) || []).forEach((e) => {
       mainPos[e.id] = e.position && e.position.name;
       // payBasis 3 = annual salary. Only the birth date's year/month/day is used, to work out if someone is under 18.
-      info[e.id] = { salaried: e.payBasis === 3, dob: e.person && e.person.dateOfBirth ? String(e.person.dateOfBirth).slice(0, 10) : null };
+      info[e.id] = { salaried: e.payBasis === 3, level: e.payLevel && e.payLevel.id, dob: e.person && e.person.dateOfBirth ? String(e.person.dateOfBirth).slice(0, 10) : null };
     });
     const under18 = (id, dateStr) => {
       const d = info[id] && info[id].dob; if (!d) return false;
@@ -570,6 +570,15 @@ async function roublerWages(env, from, to) {
     const rate = {}; let allCost = 0, allHrs = 0;
     rows.forEach((r) => { if (r.cost != null && r.hours > 0) { const id = r.employee && r.employee.id; const x = rate[id] || (rate[id] = { c: 0, h: 0 }); x.c += r.cost / 100; x.h += r.hours; allCost += r.cost / 100; allHrs += r.hours; } });
     const avg = allHrs ? allCost / allHrs : 0;
+    // Average hourly cost per award pay level (e.g. "Level 2 - Casual"), from staff on that level whose
+    // shifts Roubler has costed. Used before the overall average, as it's much closer to the person's real rate.
+    const lvl = {};
+    Object.entries(rate).forEach(([eid, x]) => { const L = info[eid] && info[eid].level; if (L && x.h) { const y = lvl[L] || (lvl[L] = { c: 0, h: 0 }); y.c += x.c; y.h += x.h; } });
+    const estRate = (eid) => {
+      const x = rate[eid]; if (x && x.h) return x.c / x.h;                     // their own costed shifts
+      const L = info[eid] && info[eid].level, y = L && lvl[L]; if (y && y.h) return y.c / y.h;  // others on the same pay level
+      return avg;                                                                // everyone's average
+    };
     const blank = () => ({ wages: 0, hours: 0, estimated: 0, rostered: false });
     const out = { doughgirlz: blank(), guncotton: { ...blank(), sections: { foh: blank(), kitchen: blank() } } };
     // First pass: each counted shift's base cost, its day and week, so under-18s' weekly hours are known.
@@ -581,7 +590,7 @@ async function roublerWages(env, from, to) {
       if (!cls) return;
       const f = r.kind === 'shift' ? r.frac : 1;
       let cost = r.cost != null ? r.cost / 100 : null, est = false;
-      if (cost == null) { const x = rate[id]; cost = (r.hours || 0) * (x && x.h ? x.c / x.h : avg); est = true; }
+      if (cost == null) { cost = (r.hours || 0) * estRate(id); est = true; }
       const day = toBrisbane(new Date(r.startTime)).dateStr, wk = weekOf(day);
       const key = id + '|' + wk; weekHrs[key] = (weekHrs[key] || 0) + (r.hours || 0);
       counted.push({ r, id, cls, f, cost, est, day, key });
