@@ -554,7 +554,7 @@ async function roublerPayRunRates(env, token) {
 }
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw12:' + from + ':' + to, incToday ? 300 : 3600, async () => {
+  return cached(env, 'rbw13:' + from + ':' + to, incToday ? 300 : 3600, async () => {
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
@@ -566,7 +566,7 @@ async function roublerWages(env, from, to) {
     const tsP = roublerGraphQL(env, { operationName: 'Ts', query: 'query Ts($s: DateTime!, $e: DateTime!) { timesheets(startTime: $s, endTime: $e, includePending: true) { startTime hours cost status employee { id fullName } location { name } position { name } } }' }, { s: start, e: end }, token);
     const shP = inclToday ? roublerGraphQL(env, { operationName: 'Sh', query: 'query Sh($s: DateTime!, $e: DateTime!) { shifts(startTime: $s, endTime: $e, includeCostings: true) { startTime endTime hours cost published employee { id fullName } location { name } position { name } } }' }, { s: today + 'T00:00:00+10:00', e: today + 'T23:59:59+10:00' }, token) : Promise.resolve(null);
     const pastEnd = (to < today ? to : addDaysStr(today, -1));
-    const rosterP = from <= pastEnd ? roublerGraphQL(env, { operationName: 'Ro', query: 'query Ro($s: DateTime!, $e: DateTime!) { shifts(startTime: $s, endTime: $e, includeCostings: true) { startTime hours cost employee { id } } }' }, { s: start, e: pastEnd + 'T23:59:59+10:00' }, token).catch(() => null) : Promise.resolve(null);
+    const rosterP = from <= pastEnd ? roublerGraphQL(env, { operationName: 'Ro', query: 'query Ro($s: DateTime!, $e: DateTime!) { shifts(startTime: $s, endTime: $e, includeCostings: true) { startTime endTime hours cost published employee { id fullName } location { name } position { name } } }' }, { s: start, e: pastEnd + 'T23:59:59+10:00' }, token).catch(() => null) : Promise.resolve(null);
     const [emp, ts, shRes, payRates, roster] = await Promise.all([empP, tsP, shP, roublerPayRunRates(env, token), rosterP]);
     // Rostered cost per hour for each person on each day: used for timesheets Roubler hasn't costed yet
     // (not approved), since the roster for that same shift usually is costed.
@@ -603,6 +603,15 @@ async function roublerWages(env, from, to) {
     }
     // Hourly cost per person from rows that have a cost, to estimate rows Roubler hasn't costed yet
     // (timesheets not approved yet show no cost).
+    // Someone who was rostered on a past day but has NO timesheet (e.g. forgot to clock in) still worked, so
+    // their rostered shift is counted, and flagged so the timesheet can be fixed in Roubler.
+    const hadTimesheet = new Set(rows.map((t) => (t.employee && t.employee.id) + '|' + toBrisbane(new Date(t.startTime)).dateStr));
+    ((roster && roster.data && roster.data.shifts) || []).forEach((x) => {
+      if (x.published === false || !x.employee) return;
+      const day = toBrisbane(new Date(x.startTime)).dateStr;
+      if (day < from || day > pastEnd || hadTimesheet.has(x.employee.id + '|' + day)) return;
+      rows.push({ ...x, kind: 'rosterOnly' });
+    });
     const rate = {}; let allCost = 0, allHrs = 0;
     rows.forEach((r) => { if (r.cost != null && r.hours > 0) { const id = r.employee && r.employee.id; const x = rate[id] || (rate[id] = { c: 0, h: 0 }); x.c += r.cost / 100; x.h += r.hours; allCost += r.cost / 100; allHrs += r.hours; } });
     const avg = allHrs ? allCost / allHrs : 0;
@@ -654,11 +663,12 @@ async function roublerWages(env, from, to) {
       const ppl = people[cls.venue] || (people[cls.venue] = {});
       const pr = ppl[id] || (ppl[id] = { name: (r.employee && r.employee.fullName || 'Unknown').replace(/\s+/g, ' ').trim(), hours: 0, cost: 0, base: 0, sup: 0, leave: 0, salaried, estimated: false, sections: {} });
       pr.hours += hrs; pr.cost += total; pr.base += base; pr.sup += sup; pr.leave += leave;
+      if (r.kind === 'rosterOnly') pr.noClock = (pr.noClock || 0) + 1;
       if (est) pr.estimated = true; if (cls.section) pr.sections[cls.section] = true;
     });
     Object.keys(people).forEach((v) => {
       out[v].people = Object.values(people[v]).map((p) => ({ name: p.name, hours: p.hours, cost: p.cost, perHour: p.hours ? p.cost / p.hours : 0,
-        salaried: p.salaried, basePerHour: p.hours ? p.base / p.hours : 0, superPerHour: p.hours ? p.sup / p.hours : 0, leavePerHour: p.hours ? p.leave / p.hours : 0,
+        noClock: p.noClock || 0, salaried: p.salaried, basePerHour: p.hours ? p.base / p.hours : 0, superPerHour: p.hours ? p.sup / p.hours : 0, leavePerHour: p.hours ? p.leave / p.hours : 0,
         estimated: p.estimated, section: Object.keys(p.sections).length === 1 ? Object.keys(p.sections)[0] : (Object.keys(p.sections).length ? 'both' : null) }))
         .sort((a, b) => b.cost - a.cost);
     });
