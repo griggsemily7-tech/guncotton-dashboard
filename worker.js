@@ -554,7 +554,7 @@ async function roublerPayRunRates(env, token) {
 }
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw13:' + from + ':' + to, incToday ? 300 : 3600, async () => {
+  return cached(env, 'rbw14:' + from + ':' + to, incToday ? 300 : 3600, async () => {
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
@@ -579,8 +579,9 @@ async function roublerWages(env, from, to) {
     const mainPos = {}, info = {};
     ((emp && emp.data && emp.data.employees) || []).forEach((e) => {
       mainPos[e.id] = e.position && e.position.name;
-      // payBasis 3 = annual salary. Only the birth date's year/month/day is used, to work out if someone is under 18.
-      info[e.id] = { salaried: e.payBasis === 3, level: e.payLevel && e.payLevel.id, dob: e.person && e.person.dateOfBirth ? String(e.person.dateOfBirth).slice(0, 10) : null };
+      // Only the birth date's year/month/day is used, to work out if someone is under 18.
+      // Roubler pay type 2 = salary. (Pay basis alone isn't enough: some casuals have an annual figure entered.)
+      info[e.id] = { salaried: e.payType === 2, level: e.payLevel && e.payLevel.id, dob: e.person && e.person.dateOfBirth ? String(e.person.dateOfBirth).slice(0, 10) : null };
     });
     const under18 = (id, dateStr) => {
       const d = info[id] && info[id].dob; if (!d) return false;
