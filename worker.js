@@ -1361,9 +1361,26 @@ export default {
       const res = { steps: [] };
       try {
         const token = await roublerRefresh(env);
-        const list = await roublerGraphQL(env, { operationName: 'Runs', query: 'query Runs { payRuns(showFinalised: true) { id endDate status } }' }, {}, token);
-        if (list && list.errors) res.steps.push({ step: 'list pay runs', errors: list.errors.map((e) => e.message) });
-        const runs = ((list && list.data && list.data.payRuns) || []);
+        // Try every way Roubler offers to list pay runs, and report how many each one finds.
+        const tries = {};
+        const q = async (label, query, vars) => {
+          try {
+            const d = await roublerGraphQL(env, { query }, vars || {}, token);
+            if (d && d.errors) { tries[label] = { errors: d.errors.map((e) => e.message).slice(0, 3) }; return null; }
+            return d && d.data;
+          } catch (e) { tries[label] = { error: String(e && e.message || e).slice(0, 200) }; return null; }
+        };
+        const en = await q('status values', 'query { __type(name: "PayRunStatus") { enumValues { name } } }');
+        const statusNames = ((en && en.__type && en.__type.enumValues) || []).map((v) => v.name);
+        res.payRunStatusValues = statusNames;
+        let runs = [];
+        const add = (label, arr) => { tries[label] = tries[label] || { found: (arr || []).length }; (arr || []).forEach((r) => { if (!runs.find((x) => x.id === r.id)) runs.push(r); }); };
+        let d1 = await q('payRuns (no filter)', 'query { payRuns { id endDate status } }'); if (d1) add('payRuns (no filter)', d1.payRuns);
+        let d2 = await q('payRuns showFinalised:true', 'query { payRuns(showFinalised: true) { id endDate status } }'); if (d2) add('payRuns showFinalised:true', d2.payRuns);
+        if (statusNames.length) { const d3 = await q('payRuns all statuses', 'query($s: [PayRunStatus!]) { payRuns(statuses: $s, showFinalised: true) { id endDate status } }', { s: statusNames }); if (d3) add('payRuns all statuses', d3.payRuns); }
+        const d4 = await q('payRunTemplates', 'query { payRunTemplates { id payRuns { id endDate status } } }');
+        if (d4) add('payRunTemplates', (d4.payRunTemplates || []).flatMap((t) => t.payRuns || []));
+        res.tries = tries;
         res.payRunsFound = runs.length;
         res.statuses = [...new Set(runs.map((r) => r.status))];
         const latest = runs.filter((r) => r.endDate).sort((a, b) => String(b.endDate).localeCompare(String(a.endDate)))[0];
