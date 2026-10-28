@@ -525,6 +525,7 @@ function roublerClassify(locName, posName, mainPos, empName) {
   const kitchen = /kitchen/i.test(loc) || /chef|cook|kitchen|dish/i.test(pos) || (!pos && /chef|cook|kitchen|dish/i.test(main));
   return { venue: 'guncotton', section: kitchen ? 'kitchen' : 'foh' };
 }
+const addDaysStr = (d, n) => { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
 const ROUBLER_EMP_MEMO = { t: 0, v: null };
 // Each person's actual hourly pay from the most recent finalised pay run (what Roubler's Payroll → Pay runs
 // screen shows). Used when a shift has no cost yet. Kept in this server's memory for 6 hours only.
@@ -553,7 +554,7 @@ async function roublerPayRunRates(env, token) {
 }
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw11:' + from + ':' + to, incToday ? 300 : 3600, async () => {
+  return cached(env, 'rbw12:' + from + ':' + to, incToday ? 300 : 3600, async () => {
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
@@ -564,7 +565,17 @@ async function roublerWages(env, from, to) {
           .then((v) => { ROUBLER_EMP_MEMO.v = v; ROUBLER_EMP_MEMO.t = Date.now(); return v; });
     const tsP = roublerGraphQL(env, { operationName: 'Ts', query: 'query Ts($s: DateTime!, $e: DateTime!) { timesheets(startTime: $s, endTime: $e, includePending: true) { startTime hours cost status employee { id fullName } location { name } position { name } } }' }, { s: start, e: end }, token);
     const shP = inclToday ? roublerGraphQL(env, { operationName: 'Sh', query: 'query Sh($s: DateTime!, $e: DateTime!) { shifts(startTime: $s, endTime: $e, includeCostings: true) { startTime endTime hours cost published employee { id fullName } location { name } position { name } } }' }, { s: today + 'T00:00:00+10:00', e: today + 'T23:59:59+10:00' }, token) : Promise.resolve(null);
-    const [emp, ts, shRes, payRates] = await Promise.all([empP, tsP, shP, roublerPayRunRates(env, token)]);
+    const pastEnd = (to < today ? to : addDaysStr(today, -1));
+    const rosterP = from <= pastEnd ? roublerGraphQL(env, { operationName: 'Ro', query: 'query Ro($s: DateTime!, $e: DateTime!) { shifts(startTime: $s, endTime: $e, includeCostings: true) { startTime hours cost employee { id } } }' }, { s: start, e: pastEnd + 'T23:59:59+10:00' }, token).catch(() => null) : Promise.resolve(null);
+    const [emp, ts, shRes, payRates, roster] = await Promise.all([empP, tsP, shP, roublerPayRunRates(env, token), rosterP]);
+    // Rostered cost per hour for each person on each day: used for timesheets Roubler hasn't costed yet
+    // (not approved), since the roster for that same shift usually is costed.
+    const rosterRate = {};
+    ((roster && roster.data && roster.data.shifts) || []).forEach((x) => {
+      if (x.cost == null || !(x.hours > 0) || !x.employee) return;
+      const k = x.employee.id + '|' + toBrisbane(new Date(x.startTime)).dateStr;
+      const y = rosterRate[k] || (rosterRate[k] = { c: 0, h: 0 }); y.c += x.cost / 100; y.h += x.hours;
+    });
     const mainPos = {}, info = {};
     ((emp && emp.data && emp.data.employees) || []).forEach((e) => {
       mainPos[e.id] = e.position && e.position.name;
@@ -616,7 +627,12 @@ async function roublerWages(env, from, to) {
       if (!cls) return;
       const f = r.kind === 'shift' ? r.frac : 1;
       let cost = r.cost != null ? r.cost / 100 : null, est = false;
-      if (cost == null) { cost = (r.hours || 0) * estRate(id); est = true; }
+      if (cost == null) {
+        // First choice: the same person's rostered cost for that day (Roubler's own figure, so no star).
+        const rr = r.kind === 'timesheet' && rosterRate[id + '|' + toBrisbane(new Date(r.startTime)).dateStr];
+        if (rr && rr.h) cost = (r.hours || 0) * (rr.c / rr.h);
+        else { cost = (r.hours || 0) * estRate(id); est = true; }
+      }
       const day = toBrisbane(new Date(r.startTime)).dateStr, wk = weekOf(day);
       const key = id + '|' + wk; weekHrs[key] = (weekHrs[key] || 0) + (r.hours || 0);
       counted.push({ r, id, cls, f, cost, est, day, key });
