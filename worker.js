@@ -143,7 +143,13 @@ function apiLogout() {
 async function getTokens(env, source) { const raw = await env.TOKENS.get('tokens:' + source); return raw ? JSON.parse(raw) : null; }
 async function saveTokens(env, source, t) { await env.TOKENS.put('tokens:' + source, JSON.stringify(t)); }
 async function clearTokens(env, source) { await env.TOKENS.delete('tokens:' + source); }
-async function noteSync(env, source) { await env.TOKENS.put('lastSync:' + source, new Date().toISOString()); }
+const SYNC_NOTED = {};
+async function noteSync(env, source) {
+  const now = Date.now();
+  if (SYNC_NOTED[source] && now - SYNC_NOTED[source] < 10 * 60 * 1000) return;   // at most every 10 minutes
+  SYNC_NOTED[source] = now;
+  try { await env.TOKENS.put('lastSync:' + source, new Date().toISOString()); } catch (e) {}
+}
 async function lastSync(env, source) { return await env.TOKENS.get('lastSync:' + source); }
 
 const XERO = {
@@ -164,37 +170,50 @@ const roublerCfg = (env) => ({
 });
 // Read-only Roubler (staging) integration: rotates access/refresh tokens in KV, seeded once from a
 // Cloudflare secret (ROUBLER_INITIAL_REFRESH_TOKEN) obtained via the one-time Postman login Roubler described.
+// Roubler's login token is also held in this server's memory (not just in storage), and simultaneous requests
+// share one refresh. So a storage hiccup or the free plan's daily save limit can't make the wages disappear
+// or lose the new refresh token, which Roubler replaces on every use.
+const ROUBLER_TOK = { v: null };
+let ROUBLER_REFRESHING = null;
 async function roublerRefresh(env) {
-  let t = await getTokens(env, 'roubler');
+  let stored = null;
+  try { stored = await getTokens(env, 'roubler'); } catch (e) {}
+  let t = ROUBLER_TOK.v;
+  if (!t || (stored && (stored.expires_at || 0) > (t.expires_at || 0))) t = stored || t;
   // A new refresh token put in the Cloudflare secret (e.g. after a fresh Postman login) always takes over
   // from whatever is stored, so recovering from a dead token is just: new Postman login → update the secret.
   const seed = env.ROUBLER_INITIAL_REFRESH_TOKEN;
   if (seed && (!t || t.seed !== seed)) t = { refresh_token: seed, seed };
   if (!t || !t.refresh_token) { const e = new Error('no roubler refresh token configured'); e.status = 401; throw e; }
   if (t.access_token && t.expires_at && Date.now() < t.expires_at - 60000) return t.access_token;
-  // Another request is already refreshing: wait for it and use the token it saves, rather than
-  // sending the same (soon-to-be-dead) refresh token a second time.
-  if (await env.TOKENS.get('roubler-refresh-lock')) {
-    for (let i = 0; i < 6; i++) {
-      await new Promise((r) => setTimeout(r, 1000));
-      const again = await getTokens(env, 'roubler');
-      if (again && again.access_token && again.expires_at && Date.now() < again.expires_at - 60000) return again.access_token;
-    }
-  }
-  await env.TOKENS.put('roubler-refresh-lock', '1', { expirationTtl: 60 });
-  const body = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: t.refresh_token });
-  const res = await fetch(roublerCfg(env).tokenUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Authorization: 'Basic ' + btoa((env.ROUBLER_CLIENT_ID || '') + ':' + (env.ROUBLER_CLIENT_SECRET || '')) },
-    body: body.toString()
-  });
-  if (!res.ok) { const e = new Error('roubler refresh failed: ' + (await res.text().catch(() => ''))); e.status = res.status; throw e; }
-  const fresh = await res.json();
-  // Roubler invalidates the old refresh token on every use, so the new one MUST be persisted or the next call breaks.
-  const updated = { access_token: fresh.access_token, refresh_token: fresh.refresh_token || t.refresh_token, expires_at: Date.now() + ((fresh.expires_in || 1800) * 1000), seed: t.seed || seed || null };
-  await saveTokens(env, 'roubler', updated);
-  await env.TOKENS.delete('roubler-refresh-lock');
-  return updated.access_token;
+  if (ROUBLER_REFRESHING) return ROUBLER_REFRESHING;   // someone is already refreshing: share their result
+  ROUBLER_REFRESHING = (async () => {
+    // Best-effort lock across servers, so two of them don't send the same refresh token at once.
+    try {
+      if (await env.TOKENS.get('roubler-refresh-lock')) {
+        for (let i = 0; i < 6; i++) {
+          await new Promise((r) => setTimeout(r, 1000));
+          const again = await getTokens(env, 'roubler');
+          if (again && again.access_token && again.expires_at && Date.now() < again.expires_at - 60000) return again.access_token;
+        }
+      }
+      await env.TOKENS.put('roubler-refresh-lock', '1', { expirationTtl: 60 });
+    } catch (e) {}
+    const body = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: t.refresh_token });
+    const res = await fetch(roublerCfg(env).tokenUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Authorization: 'Basic ' + btoa((env.ROUBLER_CLIENT_ID || '') + ':' + (env.ROUBLER_CLIENT_SECRET || '')) },
+      body: body.toString()
+    });
+    if (!res.ok) { const e = new Error('roubler refresh failed: ' + (await res.text().catch(() => ''))); e.status = res.status; throw e; }
+    const fresh = await res.json();
+    const updated = { access_token: fresh.access_token, refresh_token: fresh.refresh_token || t.refresh_token, expires_at: Date.now() + ((fresh.expires_in || 1800) * 1000), seed: t.seed || seed || null };
+    ROUBLER_TOK.v = updated;                       // memory first, so it's never lost
+    try { await saveTokens(env, 'roubler', updated); } catch (e) {}
+    try { await env.TOKENS.delete('roubler-refresh-lock'); } catch (e) {}
+    return updated.access_token;
+  })().finally(() => { ROUBLER_REFRESHING = null; });
+  return ROUBLER_REFRESHING;
 }
 async function roublerGraphQL(env, query, variables, accessToken) {
   const token = accessToken || await roublerRefresh(env);
@@ -554,7 +573,7 @@ async function roublerPayRunRates(env, token) {
 }
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw14:' + from + ':' + to, incToday ? 300 : 3600, async () => {
+  return cached(env, 'rbw15:' + from + ':' + to, incToday ? 300 : 3600, async () => {
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
