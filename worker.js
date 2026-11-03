@@ -847,7 +847,15 @@ async function squareBreakdown(env, date, hour) {
           Object.keys(one).forEach((f) => { counts[f] = each; });
         }
         // Anything still not accounted for goes under "Not specified", with the note kept so it can be checked.
-        const short = size ? size - sum(counts) : 0;
+        let short = size ? size - sum(counts) : 0;
+        // Big packs (12+): too many to spell out on the till, so whatever isn't specified is shared across the
+        // flavours that were picked, so the box still adds up to its full size.
+        if (short > 0 && size >= 12 && Object.keys(counts).length > 0) {
+          const keys = Object.keys(counts), k = keys.length, base = Math.floor(short / k), extra = short % k;
+          counts = { ...counts };
+          keys.forEach((f, i) => { counts[f] += base + (i < extra ? 1 : 0); });
+          short = 0;
+        }
         if (short > 0) {
           // Nothing picked at all is a till mistake (staff should always pick the flavours), so it's labelled as such.
           const label = sum(one) === 0 && !note ? 'No flavours picked on till' : 'Not specified';
@@ -1442,7 +1450,7 @@ export default {
       try {
         const today = toBrisbane(new Date()).dateStr;
         const dates = listDates(from, to).filter((d) => d <= today).slice(0, 31);
-        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd22:' + d) : null)));
+        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd23:' + d) : null)));
         let budget = 4, pending = 0, orders = 0, totalQty = 0, totalNet = 0, surchargeGross = 0;
         const cats = {}, extras = {}, discs = {};
         for (let i = 0; i < dates.length; i++) {
@@ -1451,7 +1459,7 @@ export default {
           if (!b) {
             if (d < today && budget <= 0) { pending++; continue; }
             b = await squareBreakdown(env, d, null);
-            if (d < today) { await env.TOKENS.put('sqbd22:' + d, JSON.stringify(b)); budget--; }
+            if (d < today) { await env.TOKENS.put('sqbd23:' + d, JSON.stringify(b)); budget--; }
           }
           orders += b.orders || 0; totalQty += b.totalQty || 0; totalNet += b.totalNet || 0; surchargeGross += b.surchargeGross || 0;
           (b.extras || []).forEach((x) => { extras[x.name] = (extras[x.name] || 0) + (x.gross || 0); });
