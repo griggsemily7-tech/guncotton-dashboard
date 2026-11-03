@@ -290,6 +290,8 @@ function prefetchCommonViews(){
   }, 1500 + (vi * periods.length + pi) * 700)));
 }
 
+const RB_LAST = {};            // last good Roubler answer for each view
+let LAST_VIEW = { key: null, data: null };
 async function fetchData(silent){
   const myGen = ++fetchGen;
   FRESH_FETCH = !!silent;
@@ -300,8 +302,10 @@ async function fetchData(silent){
   const pr = prevRangeFor(period);
   const url = '/api/metrics?cur='+r.from+':'+r.to+'&prev='+pr.from+':'+pr.to+'&venue='+currentVenue;
   // Wages come live from Roubler (both periods in one request, fetched alongside the sales figures).
+  const rbKey = r.from+':'+r.to+':'+pr.from+':'+pr.to+':'+currentVenue;
   const rbP = fetch('/api/roubler-wages?cur='+r.from+':'+r.to+'&prev='+pr.from+':'+pr.to, {cache:'no-store'})
-    .then(x=>x.ok ? x.json() : null).catch(()=>null);
+    .then(x=>x.ok ? x.json() : {error:'Roubler answered with an error ('+x.status+')'}).catch(()=>({error:'could not reach Roubler'}))
+    .then(rb=>{ if(rb && !rb.error && rb.cur) RB_LAST[rbKey] = rb; return rb; });
   const res = await fetch(url, {cache:'no-store'});
   if(myGen !== fetchGen) return; // a newer tab switch/period change has already started a fresher fetch — drop this stale one
   if(res.status===401){ location.reload(); return; }
@@ -309,7 +313,11 @@ async function fetchData(silent){
   // Wait a moment for Roubler; if it's slower, show everything now and redraw the cards when it arrives.
   let rbLate = false;
   data.roubler = await Promise.race([rbP, new Promise(r=>setTimeout(()=>{ rbLate = true; r(null); }, 1200))]);
-  if(rbLate) rbP.then(rb=>{ if(rb && myGen === fetchGen){ data.roubler = rb; renderCards(data); } });
+  // Slow? Show the last answer for this view while waiting, then redraw when the new one arrives.
+  if(rbLate){
+    data.roubler = RB_LAST[rbKey] || null;
+    rbP.then(rb=>{ if(rb && LAST_VIEW.key === rbKey && LAST_VIEW.data){ LAST_VIEW.data.roubler = rb; renderCards(LAST_VIEW.data); } });
+  }
   if(myGen !== fetchGen) return;
   data.prevLabel = PREV_LABELS[period] || 'vs last period';
   if(period==='today'){
@@ -320,6 +328,7 @@ async function fetchData(silent){
   }
   if(myGen !== fetchGen) return;
   renderBanner(data);
+  LAST_VIEW = { key: rbKey, data };
   renderCards(data);
   renderConnections(data);
   if(currentVenue==='guncotton') fetchBepozHealth(myGen); else document.getElementById('bepozHealthBanner').innerHTML = '';
@@ -356,7 +365,7 @@ async function fetchBepozHealth(myGen){
 
 // Quietly refresh in the background so new sales show up without the user needing to reload —
 // no loading flicker, and any switch to a new tab/period (fetchGen changing) cancels a stale poll.
-setInterval(() => { if(document.visibilityState === 'visible') fetchData(true); }, 20000);
+setInterval(() => { if(document.visibilityState === 'visible') fetchData(true); }, 60000);
 
 // ---- click a row to see what sold, by category (Doughgirlz / Square) ----
 const openDrills = new Set(), drillCache = {};
@@ -983,7 +992,9 @@ function renderCards(data){
   // just read $0 and mislead. Show a one-line note instead and keep the live sales figures clean.
   // Wage % comes live from Roubler, so it shows on Today too (from the roster); costs still need Xero.
   const secondaryHtml = isToday
-    ? (rb ? METRICS.filter(m=>m.key==='wagepct').map(card).join('') : '') +
+    ? (rb ? METRICS.filter(m=>m.key==='wagepct').map(card).join('') :
+        '<div class="mcard small"><div class="label">Wage %<span class="src">Roubler</span></div><div class="value notconfigured">Waiting for Roubler</div>'+
+        '<div class="desc">'+(data.roubler && data.roubler.error ? 'Roubler said: '+escHtml(String(data.roubler.error).slice(0,140)) : 'No answer yet – this fills in by itself.')+'</div></div>') +
       '<div style="grid-column:1/-1;color:var(--muted);font-size:13px;padding:2px">Cost of goods comes from Xero, so it shows in the week and month views.</div>'
     : METRICS.filter(m=>!m.primary).map(card).join('');
   document.getElementById('cards').innerHTML = primaryHtml + secondaryHtml;
