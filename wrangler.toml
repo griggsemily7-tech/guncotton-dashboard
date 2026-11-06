@@ -19,3 +19,12 @@ binding = "TOKENS"
 [vars]
 ROUBLER_TOKEN_URL = "https://oidc.roubler.com/oauth2/token"
 ROUBLER_GRAPHQL_URL = "https://app.roubler.com.au/graphql"
+
+# Holds the Roubler login so only one thing can ever renew it at a time (Roubler's refresh tokens are single-use).
+[[durable_objects.bindings]]
+name = "ROUBLER_AUTH"
+class_name = "RoublerAuth"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RoublerAuth"]
