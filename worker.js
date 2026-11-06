@@ -173,16 +173,68 @@ const roublerCfg = (env) => ({
 // Roubler's login token is also held in this server's memory (not just in storage), and simultaneous requests
 // share one refresh. So a storage hiccup or the free plan's daily save limit can't make the wages disappear
 // or lose the new refresh token, which Roubler replaces on every use.
+const cleanToken = (x) => String(x || '').replace(/["'\s]/g, '');
+const roublerAuthCfg = (env) => ({ seed: cleanToken(env.ROUBLER_INITIAL_REFRESH_TOKEN), clientId: env.ROUBLER_CLIENT_ID || '', clientSecret: env.ROUBLER_CLIENT_SECRET || '', tokenUrl: roublerCfg(env).tokenUrl });
+async function roublerRefresh(env) {
+  if (!env.ROUBLER_AUTH) return roublerRefreshKV(env);   // no Durable Object configured: use the older method
+  const stub = env.ROUBLER_AUTH.get(env.ROUBLER_AUTH.idFromName('roubler'));
+  const res = await stub.fetch('https://roubler-auth/token', { method: 'POST', body: JSON.stringify(roublerAuthCfg(env)) });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok || !j.access_token) { const e = new Error(j.error || 'roubler login failed'); e.status = j.status || 500; throw e; }
+  return j.access_token;
+}
+// Holds the Roubler login. Roubler swaps the refresh token for a new one every time it's used and kills the old
+// one, so only one thing may ever use it at a time. Durable Objects process requests for one name in a single
+// place, which guarantees that. The tokens live in the object's own storage (not the KV storage).
+export class RoublerAuth {
+  constructor(state) { this.state = state; this.pending = null; }
+  async fetch(request) {
+    const cfg = await request.json().catch(() => ({}));
+    const j = (o, status) => new Response(JSON.stringify(o), { status: status || 200, headers: { 'content-type': 'application/json' } });
+    if (new URL(request.url).pathname === '/status') {
+      const t = await this.state.storage.get('t'), err = await this.state.storage.get('lastError');
+      return j({ hasStoredToken: !!t, storedFromCurrentSecret: !!(t && t.seed === cfg.seed), secretLength: (cfg.seed || '').length,
+        accessTokenMinutesLeft: t && t.expires_at ? Math.round((t.expires_at - Date.now()) / 60000) : null, lastError: err || null });
+    }
+    try { return j({ access_token: await this.token(cfg) }); }
+    catch (e) {
+      await this.state.storage.put('lastError', { at: new Date().toISOString(), message: String(e && e.message || e).slice(0, 300) });
+      return j({ error: String(e && e.message || e), status: e && e.status || 500 }, 500);
+    }
+  }
+  token(cfg) {
+    if (!this.pending) this.pending = this.refresh(cfg).finally(() => { this.pending = null; });
+    return this.pending;
+  }
+  async refresh(cfg) {
+    let t = await this.state.storage.get('t');
+    // A new refresh token put in the Cloudflare secret always takes over from the stored one.
+    if (cfg.seed && (!t || t.seed !== cfg.seed)) t = { refresh_token: cfg.seed, seed: cfg.seed };
+    if (!t || !t.refresh_token) { const e = new Error('no roubler refresh token configured'); e.status = 401; throw e; }
+    if (t.access_token && t.expires_at && Date.now() < t.expires_at - 60000) return t.access_token;
+    const res = await fetch(cfg.tokenUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Authorization: 'Basic ' + btoa(cfg.clientId + ':' + cfg.clientSecret) },
+      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: t.refresh_token }).toString()
+    });
+    if (!res.ok) { const e = new Error('roubler refresh failed: ' + (await res.text().catch(() => ''))); e.status = res.status; throw e; }
+    const fresh = await res.json();
+    const updated = { access_token: fresh.access_token, refresh_token: fresh.refresh_token || t.refresh_token, expires_at: Date.now() + ((fresh.expires_in || 1800) * 1000), seed: t.seed || cfg.seed };
+    await this.state.storage.put('t', updated);
+    await this.state.storage.delete('lastError');
+    return updated.access_token;
+  }
+}
 const ROUBLER_TOK = { v: null };
 let ROUBLER_REFRESHING = null;
-async function roublerRefresh(env) {
+async function roublerRefreshKV(env) {
   let stored = null;
   try { stored = await getTokens(env, 'roubler'); } catch (e) {}
   let t = ROUBLER_TOK.v;
   if (!t || (stored && (stored.expires_at || 0) > (t.expires_at || 0))) t = stored || t;
   // A new refresh token put in the Cloudflare secret (e.g. after a fresh Postman login) always takes over
   // from whatever is stored, so recovering from a dead token is just: new Postman login → update the secret.
-  const seed = env.ROUBLER_INITIAL_REFRESH_TOKEN;
+  const seed = cleanToken(env.ROUBLER_INITIAL_REFRESH_TOKEN);
   if (seed && (!t || t.seed !== seed)) t = { refresh_token: seed, seed };
   if (!t || !t.refresh_token) { const e = new Error('no roubler refresh token configured'); e.status = 401; throw e; }
   if (t.access_token && t.expires_at && Date.now() < t.expires_at - 60000) return t.access_token;
@@ -573,7 +625,7 @@ async function roublerPayRunRates(env, token) {
 }
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw15:' + from + ':' + to, incToday ? 300 : 3600, async () => {
+  return cached(env, 'rbw16:' + from + ':' + to, incToday ? 300 : 3600, async () => {
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
@@ -1409,6 +1461,18 @@ export default {
         }
         return json({ date, orders: orders.length, ordersWithUnexplainedExtra: count, totalUnexplained: totalExtra / 100, examples: found });
       } catch (e) { return json({ error: String(e && e.message || e) }); }
+    }
+    if (path === '/api/roubler-auth-check') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const out = { durableObjectConfigured: !!env.ROUBLER_AUTH, secretSet: !!cleanToken(env.ROUBLER_INITIAL_REFRESH_TOKEN) };
+      if (env.ROUBLER_AUTH) {
+        try {
+          const stub = env.ROUBLER_AUTH.get(env.ROUBLER_AUTH.idFromName('roubler'));
+          const r = await stub.fetch('https://roubler-auth/status', { method: 'POST', body: JSON.stringify(roublerAuthCfg(env)) });
+          out.login = await r.json();
+        } catch (e) { out.error = String(e && e.message || e); }
+      }
+      return json(out);
     }
     if (path === '/api/roubler-payrun-check') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
