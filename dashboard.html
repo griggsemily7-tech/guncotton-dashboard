@@ -994,7 +994,9 @@ function renderCards(data){
   const secondaryHtml = isToday
     ? (rb ? METRICS.filter(m=>m.key==='wagepct').map(card).join('') :
         '<div class="mcard small"><div class="label">Wage %<span class="src">Roubler</span></div><div class="value notconfigured">Waiting for Roubler</div>'+
-        '<div class="desc">'+(data.roubler && data.roubler.error ? 'Roubler said: '+escHtml(String(data.roubler.error).slice(0,140)) : 'No answer yet – this fills in by itself.')+'</div></div>') +
+        '<div class="desc">'+(()=>{ const e = data.roubler && data.roubler.error ? String(data.roubler.error) : '';
+          if(/invalid_grant/.test(e)) return 'The saved Roubler login has expired – a new login is needed.';
+          return e ? 'Roubler said: '+escHtml(e.slice(0,140)) : 'No answer yet – this fills in by itself.'; })()+'</div></div>') +
       '<div style="grid-column:1/-1;color:var(--muted);font-size:13px;padding:2px">Cost of goods comes from Xero, so it shows in the week and month views.</div>'
     : METRICS.filter(m=>!m.primary).map(card).join('');
   document.getElementById('cards').innerHTML = primaryHtml + secondaryHtml;
