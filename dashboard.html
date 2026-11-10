@@ -541,7 +541,7 @@ const DG_GOALS = {
 // Donuts are tracked by the NUMBER of donuts sold (boxes counted as the donuts inside them), not dollars,
 // because flavours and boxes sell at different prices. Mon–Fri donuts start on the date below; set the
 // Mon–Fri numbers once you know your target (0 = no goal yet, sales still show).
-const DONUT_GOALS = { weekdaysFrom: '2026-11-11', perDay: [0, 0, 0, 0, 0, 200, 200] };  //  Mon … Sun
+const DONUT_GOALS = { weekdaysFrom: '2026-11-11', perDay: [60, 60, 75, 60, 70, 200, 200] };  //  Mon … Sun (weekday numbers are a starting estimate: weekend donuts-per-dollar × each weekday's usual sales)
 const DONUT_FALLBACK_PRICE = 4.5;   // only used to put a dollar value on the goal before any donuts have sold
 const donutGoalFor = (dateStr, w)=> (w < 5 && dateStr < DONUT_GOALS.weekdaysFrom) ? 0 : DONUT_GOALS.perDay[w];
 const goalNorm = (s)=> String(s).toLowerCase().replace(/[^a-z]/g,'').replace(/s$/,'');
