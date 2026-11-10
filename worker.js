@@ -999,7 +999,7 @@ async function squareCategoryDays(env, from, to, budget) {
   budget = budget || { left: 4 };
   const today = toBrisbane(new Date()).dateStr;
   const dates = listDates(from, to).filter((d) => d <= today);
-  const cachedVals = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqgoal11:' + d) : null)));
+  const cachedVals = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqgoal12:' + d) : null)));
   const days = [];
   let pending = 0;
   for (let i = 0; i < dates.length; i++) {
@@ -1009,9 +1009,11 @@ async function squareCategoryDays(env, from, to, budget) {
       if (d < today && budget.left <= 0) { pending++; continue; }
       const b = await squareBreakdown(env, d, null);
       rec = { cats: {} };
-      b.categories.forEach((c) => { rec.cats[c.name] = { qty: c.qty, gross: c.gross }; });
+      // `units` is the real number of donuts/cookies sold (a box counts as everything inside it); `qty` is the till's
+      // item count, where a box is 1.
+      b.categories.forEach((c) => { const units = (c.flavours || []).reduce((t, f) => t + (f.qty || 0), 0); rec.cats[c.name] = { qty: c.qty, gross: c.gross, units: units || undefined }; });
       if (b.surchargeGross > 0.005) rec.cats['Surcharges'] = { qty: 0, gross: b.surchargeGross };
-      if (d < today) { await env.TOKENS.put('sqgoal11:' + d, JSON.stringify(rec)); budget.left--; }
+      if (d < today) { await env.TOKENS.put('sqgoal12:' + d, JSON.stringify(rec)); budget.left--; }
     }
     days.push({ date: d, cats: rec.cats });
   }
