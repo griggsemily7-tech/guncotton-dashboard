@@ -528,17 +528,22 @@ const GST = 1.1;
 // Items-sold goals per category per weekday, and the set average price per item (incl. GST).
 // Gross goal = items × price. To change a goal, edit the numbers here.
 const DG_GOALS = {
-  prices: { 'Retail Coffee': 40, 'Hot Coffee': 6.5, 'Toasties': 22, 'Cookies': 8.5, 'Cold drinks': 8, 'Donuts': 4.5 },
+  prices: { 'Retail Coffee': 40, 'Hot Coffee': 6.5, 'Toasties': 22, 'Cookies': 8.5, 'Cold drinks': 8 },
   //                   Mon  Tue  Wed  Thu  Fri  Sat  Sun
   items: {
     'Retail Coffee': [  25,  25,  25,  25,  25,  50,  50],
     'Hot Coffee':    [ 100,  90,  90,  90, 100, 250, 250],
     'Toasties':      [  35,  30,  30,  30,  35,  75,  75],
     'Cookies':       [  35,  30,  30,  30,  35,  75,  75],
-    'Cold drinks':   [  40,  30,  30,  30,  40,  50,  50],
-    'Donuts':        [   0,   0,   0,   0,   0, 200, 200]
+    'Cold drinks':   [  40,  30,  30,  30,  40,  50,  50]
   }
 };
+// Donuts are tracked by the NUMBER of donuts sold (boxes counted as the donuts inside them), not dollars,
+// because flavours and boxes sell at different prices. Mon–Fri donuts start on the date below; set the
+// Mon–Fri numbers once you know your target (0 = no goal yet, sales still show).
+const DONUT_GOALS = { weekdaysFrom: '2026-11-11', perDay: [0, 0, 0, 0, 0, 200, 200] };  //  Mon … Sun
+const DONUT_FALLBACK_PRICE = 4.5;   // only used to put a dollar value on the goal before any donuts have sold
+const donutGoalFor = (dateStr, w)=> (w < 5 && dateStr < DONUT_GOALS.weekdaysFrom) ? 0 : DONUT_GOALS.perDay[w];
 const goalNorm = (s)=> String(s).toLowerCase().replace(/[^a-z]/g,'').replace(/s$/,'');
 const GOAL_BY_NORM = {}; Object.keys(DG_GOALS.items).forEach(k=>{ GOAL_BY_NORM[goalNorm(k)] = k; });
 // Display names for Square categories (Square still calls Toasties "Breakfast"). Matching works with either name,
@@ -590,6 +595,7 @@ async function fetchGoals(r, myGen, silent, period){
     const rows = {}; Object.keys(DG_GOALS.items).forEach(k=>{ rows[k] = {gross:0, goalGross:0, dueGross:0}; });
     let totalGross = 0, goalGross = 0, dueGross = 0;
     const other = {};
+    const donut = { goalUnits:0, dueUnits:0, units:0, gross:0 };
     for(let d = r.from; d <= r.to; d = addDays(d,1)){
       const w = weekdayIdx(d);
       const share = d < todayStr ? 1 : d === todayStr ? pace : 0; // how much of this day's goal should be done by now
@@ -598,13 +604,17 @@ async function fetchGoals(r, myGen, silent, period){
         rows[k].goalGross += g; rows[k].dueGross += g*share;
         goalGross += g; dueGross += g*share;
       });
+      const dg = donutGoalFor(d, w); donut.goalUnits += dg; donut.dueUnits += dg*share;
       Object.entries(actualByDate[d] || {}).forEach(([name, v])=>{
         totalGross += v.gross || 0;
         const key = GOAL_BY_NORM[goalNorm(name)];
         if(key){ rows[key].gross += v.gross || 0; }
+        else if(goalNorm(name)==='donut'){ donut.units += (v.units!=null ? v.units : (v.qty||0)); donut.gross += v.gross || 0; }
         else other[name] = (other[name]||0) + (v.gross||0);
       });
     }
+    const avgDonut = donut.units >= 5 ? donut.gross/donut.units : DONUT_FALLBACK_PRICE;   // real average price per donut
+    goalGross += donut.goalUnits*avgDonut; dueGross += donut.dueUnits*avgDonut;
     const money = (n)=> '$'+Math.round(n).toLocaleString();
     const pctText = (ratio)=> ratio==null ? '—' : Math.round(ratio*100)+'%';
     const bar = (actual, full, ratio)=> '<div class="gbar"><div style="width:'+(full>0?Math.min(100, actual/full*100):0).toFixed(1)+'%;background:'+goalColour(ratio)+'"></div></div>';
@@ -616,12 +626,19 @@ async function fetchGoals(r, myGen, silent, period){
       const ratio = x.dueGross > 0 ? x.gross/x.dueGross : (x.gross>0 ? 1 : null);
       html += '<div class="grow"><span>'+escHtml(k)+'</span><span style="color:'+goalColour(ratio)+'">'+pctText(ratio)+'</span><span>'+money(x.gross)+' <span style="color:var(--muted);font-weight:400">/ '+money(x.goalGross)+'</span></span></div>'+bar(x.gross, x.goalGross, ratio);
     });
+    // Donuts: how many donuts sold against the goal (each box counted as the donuts inside it).
+    if(donut.goalUnits>0 || donut.units>0){
+      const dr = donut.dueUnits > 0 ? donut.units/donut.dueUnits : null;
+      html += '<div class="grow"><span>Donuts</span><span style="color:'+goalColour(dr)+'">'+pctText(dr)+'</span><span>'+Math.round(donut.units).toLocaleString()+
+        (donut.goalUnits>0 ? ' <span style="color:var(--muted);font-weight:400">/ '+Math.round(donut.goalUnits).toLocaleString()+'</span>' : '')+' donuts <span style="color:var(--muted);font-weight:400">· '+money(donut.gross)+'</span></span></div>'+
+        (donut.goalUnits>0 ? bar(donut.units, donut.goalUnits, dr) : '');
+    }
     const tRatio = dueGross > 0 ? totalGross/dueGross : null;
     html += '<div class="grow total"><span>Total gross sales</span><span style="color:'+goalColour(tRatio)+'">'+pctText(tRatio)+'</span><span>'+money(totalGross)+' <span style="color:var(--muted);font-weight:400">/ '+money(goalGross)+'</span></span></div>'+bar(totalGross, goalGross, tRatio);
     const otherNames = Object.keys(other);
     let notes = '<div class="glegend">Gross sales / goal for the period, incl. GST. ';
     notes += inProgress ? 'Colours compare against where you should be <b>by now</b>: ' : 'Colours: ';
-    notes += '<b style="color:var(--good)">on goal</b>, <b style="color:var(--warn)">80–99%</b>, <b style="color:var(--bad)">under 80%</b>.</div>';
+    notes += '<b style="color:var(--good)">on goal</b>, <b style="color:var(--warn)">80–99%</b>, <b style="color:var(--bad)">under 80%</b>. Donuts are counted as donuts (boxes broken into the donuts inside), and their dollar goal uses the average price actually sold.</div>';
     if(otherNames.length) notes += '<div class="glegend">Also sold (no goal set, counted in the total): '+otherNames.map(n=>escHtml(n)+' '+money(other[n])).join(' · ')+'</div>';
     if(data.pending>0) notes += '<div class="glegend">Still loading '+data.pending+' earlier day'+(data.pending===1?'':'s')+' — figures fill in shortly.</div>';
     el.innerHTML = html + notes;
