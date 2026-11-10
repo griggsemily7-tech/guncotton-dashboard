@@ -112,9 +112,14 @@
     <option value="lastmonth">Last month</option>
     <option value="fy">This financial year</option>
     <option value="lastfy">Last financial year</option>
-    <option value="custom">Pick a day…</option>
+    <option value="custom">Pick days…</option>
   </select>
-  <input type="date" id="customDate" style="display:none;margin-left:8px;padding:4px 6px;border-radius:6px;font:inherit" onchange="if(this.value){localStorage.setItem('vd_customdate',this.value);fetchData();}">
+  <span id="customRange" style="display:none;margin-left:8px">
+    <span style="color:var(--muted);font-size:13px">From</span>
+    <input type="date" id="customDate" style="padding:4px 6px;border-radius:6px;font:inherit" onchange="onCustomChange('from')">
+    <span style="color:var(--muted);font-size:13px">to</span>
+    <input type="date" id="customDateTo" style="padding:4px 6px;border-radius:6px;font:inherit" onchange="onCustomChange('to')">
+  </span>
   <div class="cards" id="cards"></div>
   <div id="staffSection" style="margin-top:20px;display:none">
     <div style="font-size:12px;color:var(--muted);letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px">Staff costs · from Roubler</div>
@@ -193,24 +198,48 @@ let METRICS = METRICS_BY_VENUE[currentVenue];
 function fmtMoney(n){ return n==null ? null : '$'+n.toLocaleString(undefined,{maximumFractionDigits:0}); }
 function fmtPct(n){ return n==null ? null : (n*100).toFixed(1)+'%'; }
 
-// "Pick a day…": any single past day, compared with the same weekday the week before.
-function customDay(){
-  const el = document.getElementById('customDate');
-  const t = new Date(); const today = t.getFullYear()+'-'+String(t.getMonth()+1).padStart(2,'0')+'-'+String(t.getDate()).padStart(2,'0');
-  el.max = today;
-  if(!el.value) el.value = localStorage.getItem('vd_customdate') || today;
-  return el.value > today ? today : el.value;
+// "Pick days…": any run of days (one day up to a year), compared with the same weekdays in the weeks before.
+const ymd = d => d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+const dayDiff = (a,b) => Math.round((new Date(b+'T00:00:00') - new Date(a+'T00:00:00'))/86400000);
+function customRange(){
+  const A = document.getElementById('customDate'), B = document.getElementById('customDateTo');
+  const today = ymd(new Date());
+  A.max = today; B.max = today;
+  if(!A.value) A.value = localStorage.getItem('vd_customfrom') || localStorage.getItem('vd_customdate') || today;
+  if(!B.value) B.value = localStorage.getItem('vd_customto') || A.value;
+  let from = A.value > today ? today : A.value, to = B.value > today ? today : B.value;
+  if(to < from){ const t = from; from = to; to = t; }                     // either order works
+  if(dayDiff(from,to) > 365){ const f = new Date(to+'T00:00:00'); f.setDate(f.getDate()-365); from = ymd(f); }
+  return {from, to};
+}
+function onCustomChange(which){
+  const A = document.getElementById('customDate'), B = document.getElementById('customDateTo');
+  if(which==='from' && A.value && (!B.value || B.value < A.value)) B.value = A.value;   // picking a From after the To moves the To along
+  const r = customRange(); A.value = r.from; B.value = r.to;
+  localStorage.setItem('vd_customfrom', r.from); localStorage.setItem('vd_customto', r.to);
+  fetchData();
+}
+// How many whole weeks back the comparison period sits (so the same weekdays line up).
+function customWeeksBack(){ const r = customRange(); return Math.ceil((dayDiff(r.from,r.to)+1)/7); }
+function customPrevLabel(){ const r = customRange(), n = dayDiff(r.from,r.to)+1, w = customWeeksBack();
+  return n===1 ? 'vs same day the week before' : w===1 ? 'vs same days the week before' : 'vs same days '+w+' weeks before'; }
+// Whether the daily breakdown lists days, weeks or months.
+function rowModeFor(period){
+  if(period==='month'||period==='lastmonth') return 'week';
+  if(period==='fy'||period==='lastfy') return 'month';
+  if(period==='custom'){ const n = dayDiff(customRange().from, customRange().to)+1; return n<=35 ? 'day' : n<=140 ? 'week' : 'month'; }
+  return 'day';
 }
 function onPeriodChange(){
   const custom = document.getElementById('period').value === 'custom';
-  document.getElementById('customDate').style.display = custom ? 'inline-block' : 'none';
-  if(custom) customDay();
+  document.getElementById('customRange').style.display = custom ? 'inline-block' : 'none';
+  if(custom) customRange();
   fetchData();
 }
 function rangeFor(period){
   const now = new Date();
   const fmt = d => d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
-  if(period==='custom'){ const d = customDay(); return {from:d, to:d}; }
+  if(period==='custom') return customRange();
   const startOfWeek = (d,offsetWeeks=0) => { const x=new Date(d); const day=(x.getDay()+6)%7; x.setDate(x.getDate()-day+offsetWeeks*7); return x; };
   if(period==='week'){ const s=startOfWeek(now); const e=new Date(s); e.setDate(e.getDate()+6); return {from:fmt(s),to:fmt(e)}; }
   if(period==='lastweek'){ const s=startOfWeek(now,-1); const e=new Date(s); e.setDate(e.getDate()+6); return {from:fmt(s),to:fmt(e)}; }
@@ -222,11 +251,11 @@ function rangeFor(period){
 }
 
 // The immediately-preceding comparable period, used for the "vs last week/month/year" badges on the cards.
-const PREV_LABELS = {custom:'vs same day the week before', today:'vs last week', week:'vs last week (to date)', lastweek:'vs prior week', month:'vs last month (to date)', lastmonth:'vs month before', fy:'vs last year (to date)', lastfy:'vs year before'};
+const PREV_LABELS = {custom:'vs the same days before', today:'vs last week', week:'vs last week (to date)', lastweek:'vs prior week', month:'vs last month (to date)', lastmonth:'vs month before', fy:'vs last year (to date)', lastfy:'vs year before'};
 function prevRangeFor(period){
   const now = new Date();
   const fmt = d => d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
-  if(period==='custom'){ const x = new Date(customDay()+'T00:00:00'); x.setDate(x.getDate()-7); return {from:fmt(x), to:fmt(x)}; }
+  if(period==='custom'){ const r = customRange(), sh = 7*customWeeksBack(), a = new Date(r.from+'T00:00:00'), b = new Date(r.to+'T00:00:00'); a.setDate(a.getDate()-sh); b.setDate(b.getDate()-sh); return {from:fmt(a), to:fmt(b)}; }
   const startOfWeek = (d,offsetWeeks=0) => { const x=new Date(d); const day=(x.getDay()+6)%7; x.setDate(x.getDate()-day+offsetWeeks*7); return x; };
   // This week is still running, so compare it with the same days of last week (Mon to the same weekday), not the whole week.
   if(period==='week'){ const s=startOfWeek(now,-1); const e=new Date(now); e.setDate(e.getDate()-7); return {from:fmt(s),to:fmt(e)}; }
@@ -319,7 +348,7 @@ async function fetchData(silent){
     rbP.then(rb=>{ if(rb && LAST_VIEW.key === rbKey && LAST_VIEW.data){ LAST_VIEW.data.roubler = rb; renderCards(LAST_VIEW.data); } });
   }
   if(myGen !== fetchGen) return;
-  data.prevLabel = PREV_LABELS[period] || 'vs last period';
+  data.prevLabel = period==='custom' ? customPrevLabel() : (PREV_LABELS[period] || 'vs last period');
   if(period==='today'){
     // Today is only part-way through, so compare it with last week's same day up to the same time.
     const sameTime = await prevRevenueSameTime(r.from, pr.from);
@@ -334,7 +363,7 @@ async function fetchData(silent){
   if(currentVenue==='guncotton') fetchBepozHealth(myGen); else document.getElementById('bepozHealthBanner').innerHTML = '';
   const posLabel = currentVenue==='guncotton' ? 'Bepoz' : 'Square';
   document.getElementById('bpzHoursTitle').textContent = 'Hourly sales today · from '+posLabel;
-  const granularity = (period==='month'||period==='lastmonth') ? 'Weekly' : (period==='fy'||period==='lastfy') ? 'Monthly' : 'Daily';
+  const granularity = {day:'Daily', week:'Weekly', month:'Monthly'}[rowModeFor(period)];
   document.getElementById('dailyTitle').textContent = granularity+' sales this period · from '+posLabel;
   // The hourly panel is only for the Today view; other periods get the daily breakdown instead.
   const hourlySection = document.getElementById('bpzHoursSection');
@@ -661,7 +690,7 @@ async function fetchDailySales(r, myGen, silent, period){
     if(myGen !== fetchGen) return;
     if(!data.days || !data.days.length){ el.innerHTML = '<span style="color:var(--muted)">No sales recorded for this period</span>'; return; }
     const narrow = window.innerWidth < 600;
-    const mode = (period==='month'||period==='lastmonth') ? 'week' : (period==='fy'||period==='lastfy') ? 'month' : 'day';
+    const mode = rowModeFor(period);
     const money = (n)=> '$'+n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
     const canDrill = currentVenue==='doughgirlz' && (mode==='day' || mode==='week');
     const row = (a,b,count,sales,date,to)=> {
@@ -856,7 +885,7 @@ function renderStaff(rb, revenue){
   if(!rb || !rb.people || !rb.people.length){ sec.style.display = 'none'; return; }
   sec.style.display = 'block';
   const pv = document.getElementById('period').value;
-  const multiDay = pv !== 'today' && pv !== 'custom';
+  const rr = rangeFor(pv), multiDay = rr.from !== rr.to;
   const money = (n)=> '$'+Math.round(n).toLocaleString();
   const pct = (n)=> revenue ? ' · '+(n/(revenue*GST)*100).toFixed(1)+'% of sales' : '';
   const head = '<div class="shead"><span>Name</span><span>Hours</span><span title="Roubler&#39;s cost per hour worked – base rate plus any weekend, early-morning or other penalty rates">Pay per hour</span><span>Super</span><span>Holiday &amp; sick</span><span>Total per hour</span><span>Total cost</span></div>';
@@ -1060,7 +1089,7 @@ loadSettings();
 setTimeout(()=>{ OPENING = false; fetchData(true); }, 400); // then fetch fresh figures straight away
 const savedPeriod = localStorage.getItem('vd_period');
 if (savedPeriod) document.getElementById('period').value = savedPeriod;
-if (savedPeriod === 'custom') { document.getElementById('customDate').style.display = 'inline-block'; customDay(); }
+if (savedPeriod === 'custom') { document.getElementById('customRange').style.display = 'inline-block'; customRange(); }
 fetchData();
 </script>
 </body>
