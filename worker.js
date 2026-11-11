@@ -1587,6 +1587,26 @@ export default {
         return json({ error: denied ? 'Square wouldn\'t share item details. The Square access token needs "Orders (read)" and "Items (read)" permission.' : String(e && e.message || e) });
       }
     }
+    // Read-only check: for one day, the most-sold items with the size (variation) names and the modifier names the
+    // till sent for each. Shows whether sizes arrive as variations or as modifiers. Item names and counts only.
+    if (path === '/api/square-sizes-check') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const date = url.searchParams.get('date');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) return json({ error: 'add ?date=YYYY-MM-DD to the address' }, 400);
+      try {
+        const locationIds = await squareLocationIds(env);
+        const data = await squareApi(env, '/v2/orders/search', 'POST', { location_ids: locationIds, limit: 500, query: { filter: { state_filter: { states: ['COMPLETED'] }, date_time_filter: { closed_at: { start_at: date + 'T00:00:00+10:00', end_at: date + 'T23:59:59+10:00' } } } } });
+        const items = {};
+        (data.orders || []).forEach((o) => (o.line_items || []).forEach((li) => {
+          const it = items[li.name] || (items[li.name] = { qty: 0, variationNames: {}, modifierNames: {} });
+          const q = parseFloat(li.quantity) || 0; it.qty += q;
+          const vn = li.variation_name == null ? '(none)' : li.variation_name; it.variationNames[vn] = (it.variationNames[vn] || 0) + q;
+          (li.modifiers || []).forEach((m) => { it.modifierNames[m.name] = (it.modifierNames[m.name] || 0) + 1; });
+        }));
+        const top = Object.entries(items).sort((a, b) => b[1].qty - a[1].qty).slice(0, 12).map(([name, v]) => ({ name, qty: v.qty, variationNames: v.variationNames, modifierNames: v.modifierNames }));
+        return json({ date, ordersFound: (data.orders || []).length, topItems: top });
+      } catch (e) { return json({ error: String(e && e.message || e) }); }
+    }
     if (path === '/api/square-breakdown') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       const date = url.searchParams.get('date');
