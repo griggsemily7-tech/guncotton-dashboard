@@ -75,6 +75,9 @@
   .swrap>div{min-width:720px}
   @media(max-width:600px){.srow,.shead{font-size:13px}}
   .citems{display:none;padding-left:16px}
+  .irow{cursor:pointer}
+  .isizes{display:none;padding-left:18px}
+  .citems .isizes .prow{font-size:12px}
   .citems .prow{font-size:12px;color:var(--muted)}
   .fhead{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text,#e5e7eb);padding:10px 0 2px}
   .notconfigured{color:var(--muted);font-style:italic}
@@ -458,7 +461,13 @@ function renderBreakdown(data){
               : '<div class="dnote" style="font-size:12px">'+escHtml(u.item)+' – picked '+escHtml(u.picked)+
               (u.note ? ' – note “'+escHtml(u.note)+'”' : ' – no note')+' – '+qty(u.missing)+' not specified</div>').join('')+
             '<div class="dnote" style="font-size:12px">Tell Claude what these notes mean and they\'ll be counted properly.</div>' : '')
-        : c.items.map(i=>'<div class="prow"><span>'+escHtml(i.name)+'</span><span>'+qty(i.qty)+'</span><span>'+money(g(i))+'</span></div>').join('')
+        : c.items.map(i=>{
+            // Drinks sold in sizes: tap the drink to see how many of each size (Small / Medium / Large…).
+            const sz = i.sizes || [];
+            if(!(sz.length > 1 || (sz.length === 1 && sz[0].name.toLowerCase() !== 'regular'))) return '<div class="prow"><span>'+escHtml(i.name)+'</span><span>'+qty(i.qty)+'</span><span>'+money(g(i))+'</span></div>';
+            return '<div class="prow irow"><span><span class="chev">▸</span>'+escHtml(i.name)+'</span><span>'+qty(i.qty)+'</span><span>'+money(g(i))+'</span></div>'+
+              '<div class="isizes">'+sz.map(z=>'<div class="prow"><span>'+escHtml(z.name)+'</span><span>'+qty(z.qty)+'</span><span>'+money(g(z))+'</span></div>').join('')+'</div>';
+          }).join('')
     )+'</div>'
   ).join('') + (surcharge > 0.005 ? ((data.extras && data.extras.length) ? data.extras : [{name:'Surcharges', gross:surcharge}])
       .filter(x=>Math.abs(x.gross)>0.005)
@@ -507,6 +516,13 @@ async function loadDrill(row){
 }
 
 document.addEventListener('click', (e)=>{
+  const itemRow = e.target.closest('.irow');
+  if(itemRow){
+    const box = itemRow.nextElementSibling, open = box.style.display === 'block';
+    box.style.display = open ? 'none' : 'block';
+    itemRow.querySelector('.chev').textContent = open ? '▸' : '▾';
+    return;
+  }
   const catRow = e.target.closest('.crow');
   if(catRow){
     const items = catRow.nextElementSibling, open = items.style.display === 'block';
