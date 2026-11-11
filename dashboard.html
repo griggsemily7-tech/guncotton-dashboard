@@ -547,6 +547,8 @@ const DONUT_FALLBACK_PRICE = 4.5;   // only used to put a dollar value on the go
 const donutGoalFor = (dateStr, w)=> (w < 5 && dateStr < DONUT_GOALS.weekdaysFrom) ? 0 : DONUT_GOALS.perDay[w];
 const goalNorm = (s)=> String(s).toLowerCase().replace(/[^a-z]/g,'').replace(/s$/,'');
 const GOAL_BY_NORM = {}; Object.keys(DG_GOALS.items).forEach(k=>{ GOAL_BY_NORM[goalNorm(k)] = k; });
+// Categories that count towards another goal row (bottled drinks are counted with Cold drinks).
+const GOAL_ALIASES = { [goalNorm('Bottled drinks')]: 'Cold drinks' };
 // Display names for Square categories (Square still calls Toasties "Breakfast"). Matching works with either name,
 // so nothing breaks if the category is renamed in Square later.
 const CATEGORY_LABELS = { breakfast: 'Toasties' };
@@ -608,7 +610,7 @@ async function fetchGoals(r, myGen, silent, period){
       const dg = donutGoalFor(d, w); donut.goalUnits += dg; donut.dueUnits += dg*share;
       Object.entries(actualByDate[d] || {}).forEach(([name, v])=>{
         totalGross += v.gross || 0;
-        const key = GOAL_BY_NORM[goalNorm(name)];
+        const key = GOAL_BY_NORM[goalNorm(name)] || GOAL_ALIASES[goalNorm(name)];
         if(key){ rows[key].gross += v.gross || 0; rows[key].count += (v.units!=null ? v.units : (v.qty||0)); }   // number sold (boxes counted as the items inside)
         else if(goalNorm(name)==='donut'){ donut.units += (v.units!=null ? v.units : (v.qty||0)); donut.gross += v.gross || 0; }
         else other[name] = (other[name]||0) + (v.gross||0);
