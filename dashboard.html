@@ -429,6 +429,8 @@ function mergeFlavours(list){
   return groups.map(g=>({name: g.name, qty: g.qty})).sort((a,b)=> b.qty - a.qty);
 }
 
+// Drinks that only come in one size, so they never get a size dropdown. Add another name here with a | between them.
+const NO_SIZE_ITEMS = /babycino|piccolo/i;
 function renderBreakdown(data){
   if(data.error) return '<div class="dnote">'+escHtml(data.error)+'</div>';
   if(!data.categories || !data.categories.length) return '<div class="dnote">No item sales found for this time.</div>';
@@ -464,7 +466,7 @@ function renderBreakdown(data){
         : c.items.map(i=>{
             // Drinks sold in sizes: tap the drink to see how many of each size (Small / Medium / Large…).
             const sz = i.sizes || [];
-            if(!(sz.length > 1 || (sz.length === 1 && sz[0].name.toLowerCase() !== 'regular'))) return '<div class="prow"><span>'+escHtml(i.name)+'</span><span>'+qty(i.qty)+'</span><span>'+money(g(i))+'</span></div>';
+            if(NO_SIZE_ITEMS.test(i.name) || !(sz.length > 1 || (sz.length === 1 && sz[0].name.toLowerCase() !== 'regular'))) return '<div class="prow"><span>'+escHtml(i.name)+'</span><span>'+qty(i.qty)+'</span><span>'+money(g(i))+'</span></div>';
             return '<div class="prow irow"><span><span class="chev">▸</span>'+escHtml(i.name)+'</span><span>'+qty(i.qty)+'</span><span>'+money(g(i))+'</span></div>'+
               '<div class="isizes">'+sz.map(z=>'<div class="prow"><span>'+escHtml(z.name)+'</span><span>'+qty(z.qty)+'</span><span>'+money(g(z))+'</span></div>').join('')+'</div>';
           }).join('')
