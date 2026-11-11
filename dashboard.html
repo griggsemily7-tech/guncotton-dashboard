@@ -642,7 +642,7 @@ async function fetchGoals(r, myGen, silent, period){
     let notes = '<div class="glegend">Number sold · % of goal · sales / goal for the period, incl. GST (cookies and donuts count the items inside boxes). ';
     notes += inProgress ? 'Colours compare against where you should be <b>by now</b>: ' : 'Colours: ';
     notes += '<b style="color:var(--good)">on goal</b>, <b style="color:var(--warn)">80–99%</b>, <b style="color:var(--bad)">under 80%</b>. Donuts are counted as donuts (boxes broken into the donuts inside), and their dollar goal uses the average price actually sold.</div>';
-    if(otherNames.length) notes += '<div class="glegend">Also sold (no goal set, counted in the total): '+otherNames.map(n=>escHtml(n)+' '+money(other[n])).join(' · ')+'</div>';
+    // Items with no goal row (Retail, Dog Treats, uncategorised…) are still counted in the Total gross sales row, but no longer listed.
     if(data.pending>0) notes += '<div class="glegend">Still loading '+data.pending+' earlier day'+(data.pending===1?'':'s')+' — figures fill in shortly.</div>';
     el.innerHTML = html + notes;
   }catch(e){ if(myGen===fetchGen) el.innerHTML = '<span style="color:var(--muted)">Not available</span>'; }
