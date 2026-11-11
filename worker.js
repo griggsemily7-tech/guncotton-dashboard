@@ -750,6 +750,13 @@ async function roublerWages(env, from, to) {
     return out;
   });
 }
+// Each item's sizes as a list, smallest first (Small, Regular, Medium, Large…), then anything else by how many sold.
+const SIZE_RANK = { small: 1, mini: 1, regular: 2, standard: 2, medium: 3, large: 4, 'extra large': 5 };
+function finishItem(it) {
+  const sizes = Array.isArray(it.sizes) ? it.sizes : Object.entries(it.sizes || {}).map(([name, v]) => ({ name, qty: v.qty, gross: v.gross }));
+  sizes.sort((a, b) => ((SIZE_RANK[a.name.toLowerCase()] || 9) - (SIZE_RANK[b.name.toLowerCase()] || 9)) || (b.qty - a.qty));
+  return { ...it, sizes };
+}
 async function squareLocationIds(env) {
   return cached(env, 'status-cache:sqlocs', 3600, async () => {
     const data = await squareApi(env, '/v2/locations');
@@ -941,8 +948,10 @@ async function squareBreakdown(env, date, hour) {
         const f = canon(cleanFlavour(itemName)); c.flavours[f] = (c.flavours[f] || 0) + qty;
       }
     }
-    const it = c.items[itemName] || (c.items[itemName] = { name: itemName, qty: 0, net: 0, gross: 0 });
+    const it = c.items[itemName] || (c.items[itemName] = { name: itemName, qty: 0, net: 0, gross: 0, sizes: {} });
     it.qty += qty; it.net += cents / 100; it.gross += itemCents / 100;
+    const vn = String(li.variation_name || '').trim() || 'Regular';
+    const z = it.sizes[vn] || (it.sizes[vn] = { qty: 0, gross: 0 }); z.qty += qty; z.gross += itemCents / 100;
     totalQty += qty; totalCents += cents;
   }
   // Name the extras from the orders' own service charges (e.g. "Public holiday surcharge", "Card surcharge"),
@@ -987,7 +996,7 @@ async function squareBreakdown(env, date, hour) {
   }
   const discounts = Object.values(discByName).sort((a, b) => b.amount - a.amount);
   const categories = Object.values(cats)
-    .map((c) => ({ name: c.name, qty: c.qty, net: c.net, gross: c.gross, items: Object.values(c.items).sort((a, b) => b.qty - a.qty),
+    .map((c) => ({ name: c.name, qty: c.qty, net: c.net, gross: c.gross, items: Object.values(c.items).map(finishItem).sort((a, b) => b.qty - a.qty),
       flavours: Object.entries(c.flavours).map(([name, qty]) => ({ name, qty })).sort((a, b) => b.qty - a.qty),
       boxes: Object.entries(c.boxes).map(([name, qty]) => ({ name, qty })).sort((a, b) => b.qty - a.qty),
       unclear: c.unclear.slice(0, 30) }))
@@ -1538,7 +1547,7 @@ export default {
       try {
         const today = toBrisbane(new Date()).dateStr;
         const dates = listDates(from, to).filter((d) => d <= today).slice(0, 31);
-        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd23:' + d) : null)));
+        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd24:' + d) : null)));
         let budget = 4, pending = 0, orders = 0, totalQty = 0, totalNet = 0, surchargeGross = 0;
         const cats = {}, extras = {}, discs = {};
         for (let i = 0; i < dates.length; i++) {
@@ -1547,7 +1556,7 @@ export default {
           if (!b) {
             if (d < today && budget <= 0) { pending++; continue; }
             b = await squareBreakdown(env, d, null);
-            if (d < today) { await env.TOKENS.put('sqbd23:' + d, JSON.stringify(b)); budget--; }
+            if (d < today) { await env.TOKENS.put('sqbd24:' + d, JSON.stringify(b)); budget--; }
           }
           orders += b.orders || 0; totalQty += b.totalQty || 0; totalNet += b.totalNet || 0; surchargeGross += b.surchargeGross || 0;
           (b.extras || []).forEach((x) => { extras[x.name] = (extras[x.name] || 0) + (x.gross || 0); });
@@ -1559,13 +1568,14 @@ export default {
             (c.boxes || []).forEach((f) => { cc.boxes[f.name] = (cc.boxes[f.name] || 0) + (f.qty || 0); });
             (cc.unclear || (cc.unclear = [])).push(...(c.unclear || []));
             (c.items || []).forEach((it) => {
-              const ii = cc.items[it.name] || (cc.items[it.name] = { name: it.name, qty: 0, net: 0, gross: 0 });
+              const ii = cc.items[it.name] || (cc.items[it.name] = { name: it.name, qty: 0, net: 0, gross: 0, sizes: {} });
               ii.qty += it.qty || 0; ii.net += it.net || 0; ii.gross += it.gross || 0;
+              (it.sizes || []).forEach((z) => { const y = ii.sizes[z.name] || (ii.sizes[z.name] = { qty: 0, gross: 0 }); y.qty += z.qty || 0; y.gross += z.gross || 0; });
             });
           });
         }
         const categories = Object.values(cats)
-          .map((c) => ({ ...c, items: Object.values(c.items).sort((a, b) => b.qty - a.qty),
+          .map((c) => ({ ...c, items: Object.values(c.items).map(finishItem).sort((a, b) => b.qty - a.qty),
             flavours: Object.entries(c.flavours).map(([name, qty]) => ({ name, qty })).sort((a, b) => b.qty - a.qty),
             boxes: Object.entries(c.boxes).map(([name, qty]) => ({ name, qty })).sort((a, b) => b.qty - a.qty),
             unclear: (c.unclear || []).slice(0, 30) }))
