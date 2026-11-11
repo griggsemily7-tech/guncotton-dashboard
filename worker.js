@@ -593,7 +593,10 @@ function roublerClassify(locName, posName, mainPos, empName) {
   // Anything labelled Dough Girlz / DG / Bakehouse (including the DG Bakehouse chefs) is Doughgirlz.
   if (/dough\s*girl|\bDG\b|bakehouse/i.test(loc + ' ' + pos)) return { venue: 'doughgirlz', section: null };
   // Everything else is Gun Cotton cafe: kitchen (chefs, cooks, kitchen hands, dishes) or front of house.
-  const kitchen = /kitchen/i.test(loc) || /chef|cook|kitchen|dish/i.test(pos) || (!pos && /chef|cook|kitchen|dish/i.test(main));
+  // "Cold Drinks/dishes" is a front of house job (even though it mentions dishes). Dishes done round the back
+  // ("Kitchen Hand/Dishes", "Dishes") count as kitchen.
+  const coldDrinks = /cold\s*drinks/i.test(pos || main);
+  const kitchen = !coldDrinks && (/kitchen/i.test(loc) || /chef|cook|kitchen|dish/i.test(pos) || (!pos && /chef|cook|kitchen|dish/i.test(main)));
   return { venue: 'guncotton', section: kitchen ? 'kitchen' : 'foh' };
 }
 const addDaysStr = (d, n) => { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
@@ -625,7 +628,7 @@ async function roublerPayRunRates(env, token) {
 }
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw16:' + from + ':' + to, incToday ? 300 : 3600, async () => {
+  return cached(env, 'rbw17:' + from + ':' + to, incToday ? 300 : 3600, async () => {
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
