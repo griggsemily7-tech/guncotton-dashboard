@@ -592,7 +592,7 @@ async function fetchGoals(r, myGen, silent, period){
     if(data.error){ el.innerHTML = '<span style="color:var(--muted)">Not available — '+escHtml(data.error)+'</span>'; return; }
     const actualByDate = {}; (data.days||[]).forEach(d=>{ actualByDate[d.date] = d.cats || {}; });
 
-    const rows = {}; Object.keys(DG_GOALS.items).forEach(k=>{ rows[k] = {gross:0, goalGross:0, dueGross:0}; });
+    const rows = {}; Object.keys(DG_GOALS.items).forEach(k=>{ rows[k] = {gross:0, goalGross:0, dueGross:0, count:0}; });
     let totalGross = 0, goalGross = 0, dueGross = 0;
     const other = {};
     const donut = { goalUnits:0, dueUnits:0, units:0, gross:0 };
@@ -608,7 +608,7 @@ async function fetchGoals(r, myGen, silent, period){
       Object.entries(actualByDate[d] || {}).forEach(([name, v])=>{
         totalGross += v.gross || 0;
         const key = GOAL_BY_NORM[goalNorm(name)];
-        if(key){ rows[key].gross += v.gross || 0; }
+        if(key){ rows[key].gross += v.gross || 0; rows[key].count += (v.units!=null ? v.units : (v.qty||0)); }   // number sold (boxes counted as the items inside)
         else if(goalNorm(name)==='donut'){ donut.units += (v.units!=null ? v.units : (v.qty||0)); donut.gross += v.gross || 0; }
         else other[name] = (other[name]||0) + (v.gross||0);
       });
@@ -624,21 +624,20 @@ async function fetchGoals(r, myGen, silent, period){
       const x = rows[k];
       if(x.goalGross===0 && x.gross===0) return; // e.g. donuts on a weekday
       const ratio = x.dueGross > 0 ? x.gross/x.dueGross : (x.gross>0 ? 1 : null);
-      html += '<div class="grow"><span>'+escHtml(k)+'</span><span style="color:'+goalColour(ratio)+'">'+pctText(ratio)+'</span><span>'+money(x.gross)+' <span style="color:var(--muted);font-weight:400">/ '+money(x.goalGross)+'</span></span></div>'+bar(x.gross, x.goalGross, ratio);
+      html += '<div class="grow"><span>'+escHtml(k)+'</span><span style="color:'+goalColour(ratio)+'">'+pctText(ratio)+'</span><span>'+Math.round(x.count).toLocaleString()+'</span></div>'+bar(x.gross, x.goalGross, ratio);
     });
     // Donuts: how many donuts sold against the goal (each box counted as the donuts inside it).
     if(donut.goalUnits>0 || donut.units>0){
       const dr = donut.dueUnits > 0 ? donut.units/donut.dueUnits : null;
-      html += '<div class="grow"><span>Donuts</span><span style="color:'+goalColour(dr)+'">'+pctText(dr)+'</span><span>'+Math.round(donut.units).toLocaleString()+
-        (donut.goalUnits>0 ? ' <span style="color:var(--muted);font-weight:400">/ '+Math.round(donut.goalUnits).toLocaleString()+'</span>' : '')+' donuts <span style="color:var(--muted);font-weight:400">· '+money(donut.gross)+'</span></span></div>'+
+      html += '<div class="grow"><span>Donuts</span><span style="color:'+goalColour(dr)+'">'+pctText(dr)+'</span><span>'+Math.round(donut.units).toLocaleString()+'</span></div>'+
         (donut.goalUnits>0 ? bar(donut.units, donut.goalUnits, dr) : '');
     }
     const tRatio = dueGross > 0 ? totalGross/dueGross : null;
     html += '<div class="grow total"><span>Total gross sales</span><span style="color:'+goalColour(tRatio)+'">'+pctText(tRatio)+'</span><span>'+money(totalGross)+' <span style="color:var(--muted);font-weight:400">/ '+money(goalGross)+'</span></span></div>'+bar(totalGross, goalGross, tRatio);
     const otherNames = Object.keys(other);
-    let notes = '<div class="glegend">Gross sales / goal for the period, incl. GST. ';
+    let notes = '<div class="glegend">The number on each row is how many were sold (cookies and donuts count the items inside boxes). The % and colour compare sales (incl. GST) with the goal. ';
     notes += inProgress ? 'Colours compare against where you should be <b>by now</b>: ' : 'Colours: ';
-    notes += '<b style="color:var(--good)">on goal</b>, <b style="color:var(--warn)">80–99%</b>, <b style="color:var(--bad)">under 80%</b>. Donuts are counted as donuts (boxes broken into the donuts inside), and their dollar goal uses the average price actually sold.</div>';
+    notes += '<b style="color:var(--good)">on goal</b>, <b style="color:var(--warn)">80–99%</b>, <b style="color:var(--bad)">under 80%</b>.</div>';
     if(otherNames.length) notes += '<div class="glegend">Also sold (no goal set, counted in the total): '+otherNames.map(n=>escHtml(n)+' '+money(other[n])).join(' · ')+'</div>';
     if(data.pending>0) notes += '<div class="glegend">Still loading '+data.pending+' earlier day'+(data.pending===1?'':'s')+' — figures fill in shortly.</div>';
     el.innerHTML = html + notes;
