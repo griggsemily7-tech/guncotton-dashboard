@@ -487,7 +487,8 @@ function renderBreakdown(data){
             const hm = x.toLocaleTimeString('en-AU',{hour:'numeric',minute:'2-digit'});
             return multiDay ? x.toLocaleDateString('en-AU',{weekday:'short',day:'numeric',month:'short'})+' '+hm : hm; };
           const rows = tx.map(t=>{
-            const who = [t.name ? '<b>'+escHtml(t.name)+'</b>' : 'No name on sale', t.servedBy ? 'served by '+escHtml(t.servedBy) : ''].filter(Boolean).join(' · ');
+            const noName = t.hasCustomer ? '<span style="color:var(--warn)" title="'+escHtml(t.lookupError||'')+'">Customer attached – name couldn&#39;t be read</span>' : 'No name on sale';
+            const who = [t.name ? '<b>'+escHtml(t.name)+'</b>' : noName, t.servedBy ? 'served by '+escHtml(t.servedBy) : ''].filter(Boolean).join(' · ');
             const items = (t.items||[]).map(i=>(i.qty>1?qty(i.qty)+'× ':'')+escHtml(i.name)).join(', ');
             return '<div class="prow" style="align-items:start"><span>'+escHtml(when(t))+' – '+who+
               '<br><span style="font-size:11px">'+items+(t.note?' · note “'+escHtml(t.note)+'”':'')+'</span></span><span></span><span>−'+money(t.amount)+'</span></div>';
