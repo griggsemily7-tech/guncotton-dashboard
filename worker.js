@@ -751,7 +751,7 @@ async function roublerWages(env, from, to) {
   });
 }
 // Each item's sizes as a list, smallest first (Small, Regular, Medium, Large…), then anything else by how many sold.
-const SIZE_RANK = { small: 1, mini: 1, regular: 2, standard: 2, medium: 3, large: 4, 'extra large': 5 };
+const SIZE_RANK = { small: 1, mini: 1, regular: 2, 'regular price': 2, standard: 2, medium: 3, large: 4, 'extra large': 5 };
 function finishItem(it) {
   const sizes = Array.isArray(it.sizes) ? it.sizes : Object.entries(it.sizes || {}).map(([name, v]) => ({ name, qty: v.qty, gross: v.gross }));
   sizes.sort((a, b) => ((SIZE_RANK[a.name.toLowerCase()] || 9) - (SIZE_RANK[b.name.toLowerCase()] || 9)) || (b.qty - a.qty));
@@ -950,7 +950,8 @@ async function squareBreakdown(env, date, hour) {
     }
     const it = c.items[itemName] || (c.items[itemName] = { name: itemName, qty: 0, net: 0, gross: 0, sizes: {} });
     it.qty += qty; it.net += cents / 100; it.gross += itemCents / 100;
-    const vn = String(li.variation_name || '').trim() || 'Regular';
+    const vnRaw = String(li.variation_name || '').trim().toLowerCase().replace(/\s+/g, ' ') || 'regular';
+    const vn = vnRaw.charAt(0).toUpperCase() + vnRaw.slice(1);   // "large" and "Large" count as the same size
     const z = it.sizes[vn] || (it.sizes[vn] = { qty: 0, gross: 0 }); z.qty += qty; z.gross += itemCents / 100;
     totalQty += qty; totalCents += cents;
   }
@@ -1547,7 +1548,7 @@ export default {
       try {
         const today = toBrisbane(new Date()).dateStr;
         const dates = listDates(from, to).filter((d) => d <= today).slice(0, 31);
-        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd24:' + d) : null)));
+        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd25:' + d) : null)));
         let budget = 4, pending = 0, orders = 0, totalQty = 0, totalNet = 0, surchargeGross = 0;
         const cats = {}, extras = {}, discs = {};
         for (let i = 0; i < dates.length; i++) {
@@ -1556,7 +1557,7 @@ export default {
           if (!b) {
             if (d < today && budget <= 0) { pending++; continue; }
             b = await squareBreakdown(env, d, null);
-            if (d < today) { await env.TOKENS.put('sqbd24:' + d, JSON.stringify(b)); budget--; }
+            if (d < today) { await env.TOKENS.put('sqbd25:' + d, JSON.stringify(b)); budget--; }
           }
           orders += b.orders || 0; totalQty += b.totalQty || 0; totalNet += b.totalNet || 0; surchargeGross += b.surchargeGross || 0;
           (b.extras || []).forEach((x) => { extras[x.name] = (extras[x.name] || 0) + (x.gross || 0); });
@@ -1603,7 +1604,8 @@ export default {
           const vn = li.variation_name == null ? '(none)' : li.variation_name; it.variationNames[vn] = (it.variationNames[vn] || 0) + q;
           (li.modifiers || []).forEach((m) => { it.modifierNames[m.name] = (it.modifierNames[m.name] || 0) + 1; });
         }));
-        const top = Object.entries(items).sort((a, b) => b[1].qty - a[1].qty).slice(0, 12).map(([name, v]) => ({ name, qty: v.qty, variationNames: v.variationNames, modifierNames: v.modifierNames }));
+        const want = (url.searchParams.get('item') || '').toLowerCase();
+        const top = Object.entries(items).filter(([n]) => !want || n.toLowerCase().includes(want)).sort((a, b) => b[1].qty - a[1].qty).slice(0, want ? 30 : 12).map(([name, v]) => ({ name, qty: v.qty, variationNames: v.variationNames, modifierNames: v.modifierNames }));
         return json({ date, ordersFound: (data.orders || []).length, topItems: top });
       } catch (e) { return json({ error: String(e && e.message || e) }); }
     }
