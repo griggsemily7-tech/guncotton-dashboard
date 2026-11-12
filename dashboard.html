@@ -466,7 +466,7 @@ function renderBreakdown(data){
         : c.items.map(i=>{
             // Drinks sold in sizes: tap the drink to see how many of each size (Small / Medium / Large…).
             const sz = i.sizes || [];
-            if(NO_SIZE_ITEMS.test(i.name) || !(sz.length > 1 || (sz.length === 1 && sz[0].name.toLowerCase() !== 'regular'))) return '<div class="prow"><span>'+escHtml(i.name)+'</span><span>'+qty(i.qty)+'</span><span>'+money(g(i))+'</span></div>';
+            if(NO_SIZE_ITEMS.test(i.name) || !(sz.length > 1 || (sz.length === 1 && !/^regular/i.test(sz[0].name)))) return '<div class="prow"><span>'+escHtml(i.name)+'</span><span>'+qty(i.qty)+'</span><span>'+money(g(i))+'</span></div>';
             return '<div class="prow irow"><span><span class="chev">▸</span>'+escHtml(i.name)+'</span><span>'+qty(i.qty)+'</span><span>'+money(g(i))+'</span></div>'+
               '<div class="isizes">'+sz.map(z=>'<div class="prow"><span>'+escHtml(z.name)+'</span><span>'+qty(z.qty)+'</span><span>'+money(g(z))+'</span></div>').join('')+'</div>';
           }).join('')
