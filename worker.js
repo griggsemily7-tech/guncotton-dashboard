@@ -551,7 +551,7 @@ async function squareCustomerName(env, id) {
   const d = await squareApi(env, '/v2/customers/' + encodeURIComponent(id));
   const c = d.customer || {};
   const name = [c.given_name, c.family_name].filter(Boolean).join(' ') || c.company_name || c.nickname || '';
-  await env.TOKENS.put(key, name, { expirationTtl: 60 * 60 * 24 * 30 });
+  try { await env.TOKENS.put(key, name, { expirationTtl: 60 * 60 * 24 * 30 }); } catch (e) {}
   return name || null;
 }
 async function squarePaymentStaff(env, paymentId) {
@@ -562,7 +562,7 @@ async function squarePaymentStaff(env, paymentId) {
   const hit = await env.TOKENS.get(key); if (hit !== null) return hit || null;
   const m = (await squareApi(env, '/v2/team-members/' + encodeURIComponent(tm))).team_member || {};
   const name = [m.given_name, m.family_name].filter(Boolean).join(' ');
-  await env.TOKENS.put(key, name, { expirationTtl: 60 * 60 * 24 * 30 });
+  try { await env.TOKENS.put(key, name, { expirationTtl: 60 * 60 * 24 * 30 }); } catch (e) {}
   return name || null;
 }
 // ---- Wages from Roubler ----
@@ -985,13 +985,17 @@ async function squareBreakdown(env, date, hour) {
       const named = o.ticket_name || ((o.fulfillments || []).map((f) => (f.pickup_details && f.pickup_details.recipient && f.pickup_details.recipient.display_name) || '').find(Boolean)) || '';
       t.name = named || null;
       t.note = (o.line_items || []).map((li) => li.note).filter(Boolean).join(' · ') || null;
-      if (!staff || lookups >= 25) continue;
+      // A customer can be attached to the order or to the payment.
+      const custId = o.customer_id || (o.tenders || []).map((x) => x.customer_id).find(Boolean) || null;
+      t.hasCustomer = !!custId;
+      if (!staff || lookups >= 100) continue;
       lookups++;
-      try { if (!t.name && o.customer_id) t.name = await squareCustomerName(env, o.customer_id); } catch (e) {}
+      // If a name can't be read, say why (e.g. Square permission) instead of quietly showing "no name".
+      try { if (!t.name && custId) t.name = await squareCustomerName(env, custId); } catch (e) { t.lookupError = String(e && e.message || e).slice(0, 120); }
       try {
         const payId = (o.tenders || []).map((x) => x.payment_id || x.id).find(Boolean);
         if (payId) t.servedBy = await squarePaymentStaff(env, payId);
-      } catch (e) {}
+      } catch (e) { t.servedByError = String(e && e.message || e).slice(0, 120); }
     }
     r.tx.sort((a, b) => String(a.time).localeCompare(String(b.time)));
   }
@@ -1548,7 +1552,7 @@ export default {
       try {
         const today = toBrisbane(new Date()).dateStr;
         const dates = listDates(from, to).filter((d) => d <= today).slice(0, 31);
-        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd25:' + d) : null)));
+        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd26:' + d) : null)));
         let budget = 4, pending = 0, orders = 0, totalQty = 0, totalNet = 0, surchargeGross = 0;
         const cats = {}, extras = {}, discs = {};
         for (let i = 0; i < dates.length; i++) {
@@ -1557,7 +1561,7 @@ export default {
           if (!b) {
             if (d < today && budget <= 0) { pending++; continue; }
             b = await squareBreakdown(env, d, null);
-            if (d < today) { await env.TOKENS.put('sqbd25:' + d, JSON.stringify(b)); budget--; }
+            if (d < today) { await env.TOKENS.put('sqbd26:' + d, JSON.stringify(b)); budget--; }
           }
           orders += b.orders || 0; totalQty += b.totalQty || 0; totalNet += b.totalNet || 0; surchargeGross += b.surchargeGross || 0;
           (b.extras || []).forEach((x) => { extras[x.name] = (extras[x.name] || 0) + (x.gross || 0); });
@@ -1590,6 +1594,31 @@ export default {
     }
     // Read-only check: for one day, the most-sold items with the size (variation) names and the modifier names the
     // till sent for each. Shows whether sizes arrive as variations or as modifiers. Item names and counts only.
+    if (path === '/api/discount-names-check') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const date = url.searchParams.get('date');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) return json({ error: 'add ?date=YYYY-MM-DD to the address' }, 400);
+      try {
+        const locationIds = await squareLocationIds(env);
+        const data = await squareApi(env, '/v2/orders/search', 'POST', { location_ids: locationIds, limit: 500, query: { filter: { state_filter: { states: ['COMPLETED'] }, date_time_filter: { closed_at: { start_at: date + 'T00:00:00+10:00', end_at: date + 'T23:59:59+10:00' } } } } });
+        const staff = (data.orders || []).filter((o) => (o.discounts || []).some((d) => /staff/i.test(d.name || '')));
+        const n = (f) => staff.filter(f).length;
+        const out = { date, staffDiscountSales: staff.length,
+          withTicketName: n((o) => !!o.ticket_name),
+          withPickupRecipientName: n((o) => (o.fulfillments || []).some((f) => f.pickup_details && f.pickup_details.recipient && f.pickup_details.recipient.display_name)),
+          withCustomerOnOrder: n((o) => !!o.customer_id),
+          withCustomerOnPayment: n((o) => (o.tenders || []).some((t) => t.customer_id)),
+          withItemNote: n((o) => (o.line_items || []).some((li) => li.note)),
+          withReferenceId: n((o) => !!o.reference_id),
+          withNoNameAnywhere: n((o) => !o.ticket_name && !o.customer_id && !(o.tenders || []).some((t) => t.customer_id) && !(o.fulfillments || []).some((f) => f.pickup_details && f.pickup_details.recipient && f.pickup_details.recipient.display_name)) };
+        const cid = (staff.map((o) => o.customer_id || (o.tenders || []).map((t) => t.customer_id).find(Boolean)).find(Boolean));
+        if (cid) { try { const d = await squareApi(env, '/v2/customers/' + encodeURIComponent(cid)); const c = d.customer || {}; out.customerLookup = (c.given_name || c.family_name || c.company_name || c.nickname) ? 'works (name found)' : 'works, but that customer has no name saved'; } catch (e) { out.customerLookup = 'FAILED: ' + String(e && e.message || e).slice(0, 160); } }
+        else out.customerLookup = 'no customer was attached to any staff discount sale that day';
+        const pid = staff.map((o) => (o.tenders || []).map((t) => t.payment_id || t.id).find(Boolean)).find(Boolean);
+        if (pid) { try { const p = (await squareApi(env, '/v2/payments/' + encodeURIComponent(pid))).payment || {}; out.servedBy = (p.team_member_id || p.employee_id) ? 'payment shows who served' : 'payment has no team member'; } catch (e) { out.servedBy = 'FAILED: ' + String(e && e.message || e).slice(0, 160); } }
+        return json(out);
+      } catch (e) { return json({ error: String(e && e.message || e) }); }
+    }
     if (path === '/api/square-sizes-check') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       const date = url.searchParams.get('date');
@@ -1844,4 +1873,4 @@ export default {
     }
     return new Response('Not found', { status: 404 });
   }
-};
+};v
