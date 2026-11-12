@@ -1596,25 +1596,29 @@ export default {
     // till sent for each. Shows whether sizes arrive as variations or as modifiers. Item names and counts only.
     if (path === '/api/discount-names-check') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
-      const date = url.searchParams.get('date');
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) return json({ error: 'add ?date=YYYY-MM-DD to the address' }, 400);
+      const date = url.searchParams.get('date'), to = url.searchParams.get('to') || date;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '') || !/^\d{4}-\d{2}-\d{2}$/.test(to || '')) return json({ error: 'add ?date=YYYY-MM-DD (and optionally &to=YYYY-MM-DD, up to 14 days) to the address' }, 400);
       try {
         const locationIds = await squareLocationIds(env);
-        const data = await squareApi(env, '/v2/orders/search', 'POST', { location_ids: locationIds, limit: 500, query: { filter: { state_filter: { states: ['COMPLETED'] }, date_time_filter: { closed_at: { start_at: date + 'T00:00:00+10:00', end_at: date + 'T23:59:59+10:00' } } } } });
-        const staff = (data.orders || []).filter((o) => (o.discounts || []).some((d) => /staff/i.test(d.name || '')));
-        const n = (f) => staff.filter(f).length;
-        const out = { date, staffDiscountSales: staff.length,
-          withTicketName: n((o) => !!o.ticket_name),
-          withPickupRecipientName: n((o) => (o.fulfillments || []).some((f) => f.pickup_details && f.pickup_details.recipient && f.pickup_details.recipient.display_name)),
-          withCustomerOnOrder: n((o) => !!o.customer_id),
-          withCustomerOnPayment: n((o) => (o.tenders || []).some((t) => t.customer_id)),
-          withItemNote: n((o) => (o.line_items || []).some((li) => li.note)),
-          withReferenceId: n((o) => !!o.reference_id),
-          withNoNameAnywhere: n((o) => !o.ticket_name && !o.customer_id && !(o.tenders || []).some((t) => t.customer_id) && !(o.fulfillments || []).some((f) => f.pickup_details && f.pickup_details.recipient && f.pickup_details.recipient.display_name)) };
-        const cid = (staff.map((o) => o.customer_id || (o.tenders || []).map((t) => t.customer_id).find(Boolean)).find(Boolean));
+        const days = []; for (let d = date; d <= to && days.length < 14; d = addDaysStr(d, 1)) days.push(d);
+        const total = { staffDiscountSales: 0, withTicketName: 0, withCustomerOnOrder: 0, withCustomerOnPayment: 0, withPickupRecipientName: 0, withItemNote: 0, withNoNameAnywhere: 0 };
+        const perDay = []; let cid = null, pid = null;
+        for (const d of days) {
+          const data = await squareApi(env, '/v2/orders/search', 'POST', { location_ids: locationIds, limit: 500, query: { filter: { state_filter: { states: ['COMPLETED'] }, date_time_filter: { closed_at: { start_at: d + 'T00:00:00+10:00', end_at: d + 'T23:59:59+10:00' } } } } });
+          const staff = (data.orders || []).filter((o) => (o.discounts || []).some((x) => /staff/i.test(x.name || '')));
+          const n = (f) => staff.filter(f).length;
+          const hasRecipient = (o) => (o.fulfillments || []).some((f) => f.pickup_details && f.pickup_details.recipient && f.pickup_details.recipient.display_name);
+          const payCust = (o) => (o.tenders || []).some((t) => t.customer_id);
+          const noName = n((o) => !o.ticket_name && !o.customer_id && !payCust(o) && !hasRecipient(o));
+          total.staffDiscountSales += staff.length; total.withTicketName += n((o) => !!o.ticket_name); total.withCustomerOnOrder += n((o) => !!o.customer_id);
+          total.withCustomerOnPayment += n(payCust); total.withPickupRecipientName += n(hasRecipient); total.withItemNote += n((o) => (o.line_items || []).some((li) => li.note)); total.withNoNameAnywhere += noName;
+          perDay.push({ date: d, staffDiscountSales: staff.length, noNameAnywhere: noName });
+          cid = cid || staff.map((o) => o.customer_id || (o.tenders || []).map((t) => t.customer_id).find(Boolean)).find(Boolean);
+          pid = pid || staff.map((o) => (o.tenders || []).map((t) => t.payment_id || t.id).find(Boolean)).find(Boolean);
+        }
+        const out = { from: days[0], to: days[days.length - 1], ...total, perDay };
         if (cid) { try { const d = await squareApi(env, '/v2/customers/' + encodeURIComponent(cid)); const c = d.customer || {}; out.customerLookup = (c.given_name || c.family_name || c.company_name || c.nickname) ? 'works (name found)' : 'works, but that customer has no name saved'; } catch (e) { out.customerLookup = 'FAILED: ' + String(e && e.message || e).slice(0, 160); } }
-        else out.customerLookup = 'no customer was attached to any staff discount sale that day';
-        const pid = staff.map((o) => (o.tenders || []).map((t) => t.payment_id || t.id).find(Boolean)).find(Boolean);
+        else out.customerLookup = 'no customer was attached to any staff discount sale in this period';
         if (pid) { try { const p = (await squareApi(env, '/v2/payments/' + encodeURIComponent(pid))).payment || {}; out.servedBy = (p.team_member_id || p.employee_id) ? 'payment shows who served' : 'payment has no team member'; } catch (e) { out.servedBy = 'FAILED: ' + String(e && e.message || e).slice(0, 160); } }
         return json(out);
       } catch (e) { return json({ error: String(e && e.message || e) }); }
