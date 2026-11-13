@@ -768,7 +768,8 @@ const SIZE_RANK = { small: 1, mini: 1, regular: 2, 'regular price': 2, standard:
 function finishItem(it) {
   const sizes = Array.isArray(it.sizes) ? it.sizes : Object.entries(it.sizes || {}).map(([name, v]) => ({ name, qty: v.qty, gross: v.gross }));
   sizes.sort((a, b) => ((SIZE_RANK[a.name.toLowerCase()] || 9) - (SIZE_RANK[b.name.toLowerCase()] || 9)) || (b.qty - a.qty));
-  return { ...it, sizes };
+  const details = (Array.isArray(it.details) ? it.details : Object.values(it.details || {})).sort((a, b) => b.qty - a.qty);
+  return { ...it, sizes, details };
 }
 async function squareLocationIds(env) {
   return cached(env, 'status-cache:sqlocs', 3600, async () => {
@@ -966,6 +967,12 @@ async function squareBreakdown(env, date, hour) {
     const vnRaw = String(li.variation_name || '').trim().toLowerCase().replace(/\s+/g, ' ') || 'regular';
     const vn = vnRaw.charAt(0).toUpperCase() + vnRaw.slice(1);   // "large" and "Large" count as the same size
     const z = it.sizes[vn] || (it.sizes[vn] = { qty: 0, gross: 0 }); z.qty += qty; z.gross += itemCents / 100;
+    if (/misc/i.test(itemName)) {   // "Misc toasties" etc.: keep what was typed or picked to say which one it really was
+      const det = it.details || (it.details = {});
+      const bump = (kind, name) => { if (!name) return; const k = kind + '|' + name; const y = det[k] || (det[k] = { kind, name, qty: 0 }); y.qty += qty; };
+      (li.modifiers || []).forEach((m) => bump('modifier', String(m.name || '').trim()));
+      if (li.note) bump('note', String(li.note).trim());
+    }
     totalQty += qty; totalCents += cents;
   }
   // Name the extras from the orders' own service charges (e.g. "Public holiday surcharge", "Card surcharge"),
@@ -1565,7 +1572,7 @@ export default {
       try {
         const today = toBrisbane(new Date()).dateStr;
         const dates = listDates(from, to).filter((d) => d <= today).slice(0, 31);
-        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd26:' + d) : null)));
+        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd27:' + d) : null)));
         let budget = 4, pending = 0, orders = 0, totalQty = 0, totalNet = 0, surchargeGross = 0;
         const cats = {}, extras = {}, discs = {};
         for (let i = 0; i < dates.length; i++) {
@@ -1574,7 +1581,7 @@ export default {
           if (!b) {
             if (d < today && budget <= 0) { pending++; continue; }
             b = await squareBreakdown(env, d, null);
-            if (d < today) { await env.TOKENS.put('sqbd26:' + d, JSON.stringify(b)); budget--; }
+            if (d < today) { await env.TOKENS.put('sqbd27:' + d, JSON.stringify(b)); budget--; }
           }
           orders += b.orders || 0; totalQty += b.totalQty || 0; totalNet += b.totalNet || 0; surchargeGross += b.surchargeGross || 0;
           (b.extras || []).forEach((x) => { extras[x.name] = (extras[x.name] || 0) + (x.gross || 0); });
@@ -1589,6 +1596,8 @@ export default {
               const ii = cc.items[it.name] || (cc.items[it.name] = { name: it.name, qty: 0, net: 0, gross: 0, sizes: {} });
               ii.qty += it.qty || 0; ii.net += it.net || 0; ii.gross += it.gross || 0;
               (it.sizes || []).forEach((z) => { const y = ii.sizes[z.name] || (ii.sizes[z.name] = { qty: 0, gross: 0 }); y.qty += z.qty || 0; y.gross += z.gross || 0; });
+              ii.details = ii.details || {};
+              (it.details || []).forEach((d) => { const k = d.kind + '|' + d.name; const y = ii.details[k] || (ii.details[k] = { kind: d.kind, name: d.name, qty: 0 }); y.qty += d.qty || 0; });
             });
           });
         }
@@ -1645,13 +1654,14 @@ export default {
         const data = await squareApi(env, '/v2/orders/search', 'POST', { location_ids: locationIds, limit: 500, query: { filter: { state_filter: { states: ['COMPLETED'] }, date_time_filter: { closed_at: { start_at: date + 'T00:00:00+10:00', end_at: date + 'T23:59:59+10:00' } } } } });
         const items = {};
         (data.orders || []).forEach((o) => (o.line_items || []).forEach((li) => {
-          const it = items[li.name] || (items[li.name] = { qty: 0, variationNames: {}, modifierNames: {} });
+          const it = items[li.name] || (items[li.name] = { qty: 0, variationNames: {}, modifierNames: {}, notes: {} });
+          if (li.note) it.notes[li.note] = (it.notes[li.note] || 0) + (parseFloat(li.quantity) || 0);
           const q = parseFloat(li.quantity) || 0; it.qty += q;
           const vn = li.variation_name == null ? '(none)' : li.variation_name; it.variationNames[vn] = (it.variationNames[vn] || 0) + q;
           (li.modifiers || []).forEach((m) => { it.modifierNames[m.name] = (it.modifierNames[m.name] || 0) + 1; });
         }));
         const want = (url.searchParams.get('item') || '').toLowerCase();
-        const top = Object.entries(items).filter(([n]) => !want || n.toLowerCase().includes(want)).sort((a, b) => b[1].qty - a[1].qty).slice(0, want ? 30 : 12).map(([name, v]) => ({ name, qty: v.qty, variationNames: v.variationNames, modifierNames: v.modifierNames }));
+        const top = Object.entries(items).filter(([n]) => !want || n.toLowerCase().includes(want)).sort((a, b) => b[1].qty - a[1].qty).slice(0, want ? 30 : 12).map(([name, v]) => ({ name, qty: v.qty, variationNames: v.variationNames, modifierNames: v.modifierNames, notes: v.notes }));
         return json({ date, ordersFound: (data.orders || []).length, topItems: top });
       } catch (e) { return json({ error: String(e && e.message || e) }); }
     }
