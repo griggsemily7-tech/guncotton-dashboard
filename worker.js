@@ -964,9 +964,12 @@ async function squareBreakdown(env, date, hour) {
     }
     const it = c.items[itemName] || (c.items[itemName] = { name: itemName, qty: 0, net: 0, gross: 0, sizes: {} });
     it.qty += qty; it.net += cents / 100; it.gross += itemCents / 100;
-    const vnRaw = String(li.variation_name || '').trim().toLowerCase().replace(/\s+/g, ' ') || 'regular';
-    const vn = vnRaw.charAt(0).toUpperCase() + vnRaw.slice(1);   // "large" and "Large" count as the same size
-    const z = it.sizes[vn] || (it.sizes[vn] = { qty: 0, gross: 0 }); z.qty += qty; z.gross += itemCents / 100;
+    const vnClean = String(li.variation_name || '').trim().replace(/\s+/g, ' ') || 'Regular';
+    const vnLow = vnClean.toLowerCase();
+    // Size words are tidied so "large" and "Large" count as the same size; any other name (e.g. "Ham + Cheese") is kept as typed.
+    const vn = SIZE_RANK[vnLow] ? vnLow.charAt(0).toUpperCase() + vnLow.slice(1) : vnClean;
+    const vKey = Object.keys(it.sizes).find((k) => k.toLowerCase() === vn.toLowerCase()) || vn;   // same name in different capitals = one line
+    const z = it.sizes[vKey] || (it.sizes[vKey] = { qty: 0, gross: 0 }); z.qty += qty; z.gross += itemCents / 100;
     if (/misc/i.test(itemName)) {   // "Misc toasties" etc.: keep what was typed or picked to say which one it really was
       const det = it.details || (it.details = {});
       const bump = (kind, name) => { if (!name) return; const k = kind + '|' + name; const y = det[k] || (det[k] = { kind, name, qty: 0 }); y.qty += qty; };
