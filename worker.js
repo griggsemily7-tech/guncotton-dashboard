@@ -600,6 +600,16 @@ function roublerClassify(locName, posName, mainPos, empName) {
   return { venue: 'guncotton', section: kitchen ? 'kitchen' : 'foh' };
 }
 const addDaysStr = (d, n) => { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
+// Days when someone worked at a different venue from the one Roubler has them under. The cleanest fix is to
+// change the location/position on that shift in Roubler; this is for when that isn't possible.
+// section (Gun Cotton only): 'kitchen' or 'foh'.
+const VENUE_OVERRIDES = [
+  { name: 'maria maldonado daza', from: '2026-11-13', to: '2026-11-13', venue: 'guncotton', section: 'kitchen' }
+];
+const venueOverrideFor = (fullName, day) => {
+  const n = String(fullName || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  return VENUE_OVERRIDES.find((o) => o.name === n && day >= o.from && day <= o.to) || null;
+};
 const ROUBLER_EMP_MEMO = { t: 0, v: null };
 // Each person's actual hourly pay from the most recent finalised pay run (what Roubler's Payroll → Pay runs
 // screen shows). Used when a shift has no cost yet. Kept in this server's memory for 6 hours only.
@@ -628,7 +638,7 @@ async function roublerPayRunRates(env, token) {
 }
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw17:' + from + ':' + to, incToday ? 300 : 3600, async () => {
+  return cached(env, 'rbw18:' + from + ':' + to, incToday ? 300 : 3600, async () => {
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
@@ -707,8 +717,11 @@ async function roublerWages(env, from, to) {
     const weekOf = (dateStr) => { const d = new Date(dateStr + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.toISOString().slice(0, 10); };
     rows.forEach((r) => {
       const id = r.employee && r.employee.id;
-      const cls = roublerClassify(r.location && r.location.name, r.position && r.position.name, mainPos[id], r.employee && r.employee.fullName);
+      let cls = roublerClassify(r.location && r.location.name, r.position && r.position.name, mainPos[id], r.employee && r.employee.fullName);
       if (!cls) return;
+      // A day where someone actually worked at the other venue from what Roubler says (see VENUE_OVERRIDES).
+      const ov = venueOverrideFor(r.employee && r.employee.fullName, toBrisbane(new Date(r.startTime)).dateStr);
+      if (ov) cls = { venue: ov.venue, section: ov.venue === 'guncotton' ? (ov.section || 'foh') : null };
       const f = r.kind === 'shift' ? r.frac : 1;
       let cost = r.cost != null ? r.cost / 100 : null, est = false;
       if (cost == null) {
