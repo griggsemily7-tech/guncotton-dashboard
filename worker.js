@@ -822,7 +822,7 @@ async function squareBreakdown(env, date, hour) {
     cursor = data.cursor; pages++;
   } while (cursor && pages < 10);
   const lines = [];
-  orders.forEach((o) => (o.line_items || []).forEach((li) => lines.push(li)));
+  orders.forEach((o) => (o.line_items || []).forEach((li) => { li._ticket = o.ticket_name || null; lines.push(li); }));
   const variationIds = [...new Set(lines.map((li) => li.catalog_object_id).filter(Boolean))];
   const catMap = variationIds.length ? await squareCategoriesFor(env, variationIds) : {};
   const cats = {};
@@ -870,7 +870,15 @@ async function squareBreakdown(env, date, hour) {
     const qty = parseFloat(li.quantity) || 0;
     const cents = ((li.total_money && li.total_money.amount) || 0) - ((li.total_tax_money && li.total_tax_money.amount) || 0);
     const meta = li.catalog_object_id ? catMap[li.catalog_object_id] : null;
-    const itemName = li.name || (meta && meta.item) || 'Item';
+    let itemName = li.name || (meta && meta.item) || 'Item';
+    // A one-off sale that isn't in the catalogue (so it lands in "Uncategorised") has no real name. Use what the till
+    // recorded to say what it was: the note typed on the item, a variation name, or the name put on the sale.
+    if (!meta && (!li.name || /^(custom amount|item|misc|other)$/i.test(String(li.name).trim()))) {
+      const said = String(li.note || '').trim()
+        || (li.variation_name && !/^regular/i.test(String(li.variation_name)) ? String(li.variation_name).trim() : '')
+        || String(li._ticket || '').trim();
+      if (said) itemName = said;
+    }
     let catName = meta ? meta.category : 'Uncategorised';
     // Items Square files under the wrong category for how we track them. Add a line here to move another item.
     const CATEGORY_OVERRIDES = [
@@ -1575,7 +1583,7 @@ export default {
       try {
         const today = toBrisbane(new Date()).dateStr;
         const dates = listDates(from, to).filter((d) => d <= today).slice(0, 31);
-        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd27:' + d) : null)));
+        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd28:' + d) : null)));
         let budget = 4, pending = 0, orders = 0, totalQty = 0, totalNet = 0, surchargeGross = 0;
         const cats = {}, extras = {}, discs = {};
         for (let i = 0; i < dates.length; i++) {
@@ -1584,7 +1592,7 @@ export default {
           if (!b) {
             if (d < today && budget <= 0) { pending++; continue; }
             b = await squareBreakdown(env, d, null);
-            if (d < today) { await env.TOKENS.put('sqbd27:' + d, JSON.stringify(b)); budget--; }
+            if (d < today) { await env.TOKENS.put('sqbd28:' + d, JSON.stringify(b)); budget--; }
           }
           orders += b.orders || 0; totalQty += b.totalQty || 0; totalNet += b.totalNet || 0; surchargeGross += b.surchargeGross || 0;
           (b.extras || []).forEach((x) => { extras[x.name] = (extras[x.name] || 0) + (x.gross || 0); });
