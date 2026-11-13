@@ -469,9 +469,13 @@ function renderBreakdown(data){
             // Drinks sold in sizes: tap the drink to see how many of each size (Small / Medium / Large…).
             const sz = i.sizes || [];
             // Only real sizes get a dropdown: a variation like "Noah apple" is just a product name, not a size.
-            if(NO_SIZE_ITEMS.test(i.name) || !sz.some(z=>REAL_SIZE.test(z.name))) return '<div class="prow"><span>'+escHtml(i.name)+'</span><span>'+qty(i.qty)+'</span><span>'+money(g(i))+'</span></div>';
+            // "Misc …" items: show whatever the till recorded to say which one it was (variation, add-ons, notes).
+            const det = i.details || [], isMisc = /misc/i.test(i.name);
+            const miscHas = isMisc && (det.length || sz.some(z=>!/^regular/i.test(z.name)));
+            if(!miscHas && (NO_SIZE_ITEMS.test(i.name) || !sz.some(z=>REAL_SIZE.test(z.name)))) return '<div class="prow"><span>'+escHtml(i.name)+'</span><span>'+qty(i.qty)+'</span><span>'+money(g(i))+'</span></div>';
             return '<div class="prow irow"><span><span class="chev">▸</span>'+escHtml(i.name)+'</span><span>'+qty(i.qty)+'</span><span>'+money(g(i))+'</span></div>'+
-              '<div class="isizes">'+sz.map(z=>'<div class="prow"><span>'+escHtml(z.name)+'</span><span>'+qty(z.qty)+'</span><span>'+money(g(z))+'</span></div>').join('')+'</div>';
+              '<div class="isizes">'+sz.map(z=>'<div class="prow"><span>'+escHtml(z.name)+'</span><span>'+qty(z.qty)+'</span><span>'+money(g(z))+'</span></div>').join('')+
+              (isMisc ? det.map(d=>'<div class="prow"><span><span style="color:var(--muted)">'+(d.kind==='note'?'Note: ':'Add-on: ')+'</span>'+escHtml(d.name)+'</span><span>'+qty(d.qty)+'</span><span></span></div>').join('') : '')+'</div>';
           }).join('')
     )+'</div>'
   ).join('') + (surcharge > 0.005 ? ((data.extras && data.extras.length) ? data.extras : [{name:'Surcharges', gross:surcharge}])
