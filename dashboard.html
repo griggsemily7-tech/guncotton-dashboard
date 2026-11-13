@@ -1038,6 +1038,18 @@ function renderCards(data){
     if (rb.rostered) bits.push("today so far, from the roster");
     if (rb.estimated > 0.5) bits.push('$'+Math.round(rb.estimated).toLocaleString()+' estimated (timesheets not approved yet)');
     targetLines.wagepct = (targetLines.wagepct ? targetLines.wagepct+'<br>' : '') + bits.join(' · ');
+    // Gun Cotton: how much of the wage % is front of house and how much is kitchen (each as a % of sales, like the total),
+    // with the change since the comparison period.
+    if (currentVenue==='guncotton' && rb.sections && revenue) {
+      const part = (sec, rev)=> (sec && rev) ? sec.wages/(rev*GST)*100 : null;
+      const f = part(rb.sections.foh, revenue), k = part(rb.sections.kitchen, revenue);
+      const pf = (prb && prb.sections && pRevenue) ? part(prb.sections.foh, pRevenue) : null, pk = (prb && prb.sections && pRevenue) ? part(prb.sections.kitchen, pRevenue) : null;
+      const delta = (now, before)=> before==null ? '' : ' <span style="color:'+(now-before > 0.05 ? 'var(--bad)' : now-before < -0.05 ? 'var(--good)' : 'var(--muted)')+'">'+(now-before > 0.05 ? '▲' : now-before < -0.05 ? '▼' : '•')+' '+Math.abs(now-before).toFixed(1)+' pts</span>';
+      const tot = (f||0)+(k||0) || 1;
+      targetLines.wagepct += '<div style="display:flex;height:7px;border-radius:4px;overflow:hidden;margin:8px 0 6px"><div style="width:'+(f/tot*100).toFixed(1)+'%;background:#3b82f6"></div><div style="width:'+(k/tot*100).toFixed(1)+'%;background:#f59e0b"></div></div>'+
+        '<div style="display:flex;justify-content:space-between;gap:8px"><span><span style="color:#3b82f6">●</span> Front of house</span><span><b>'+f.toFixed(1)+'%</b>'+delta(f,pf)+'</span></div>'+
+        '<div style="display:flex;justify-content:space-between;gap:8px"><span><span style="color:#f59e0b">●</span> Kitchen</span><span><b>'+k.toFixed(1)+'%</b>'+delta(k,pk)+'</span></div>';
+    }
     targetLines.wagepct += '<br><a href="#staffSection" style="color:inherit">See staff costs ↓</a>';
   }
   renderStaff(rb, revenue);
