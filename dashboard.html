@@ -939,6 +939,7 @@ function renderStaff(rb, revenue){
   const ph = (n)=> '$'+(n||0).toFixed(2);
   const row = (p)=> '<div class="srow"><span>'+escHtml(p.name)+(p.salaried?' <span style="color:var(--muted);font-size:12px">salary</span>':'')+
     (p.estimated?' <span title="Includes an estimate – timesheet not costed yet" style="color:var(--warn)">*</span>':'')+
+    (p.longShift?' <span title="A timesheet over 12 hours long – they may have forgotten to clock out. Fix the clock-out in Roubler." style="display:inline-block;font-size:11px;font-weight:700;color:#FFFFFF;background:var(--bad);border-radius:4px;padding:0 5px">check clock-out'+(p.longShift>1?' ×'+p.longShift:'')+'</span>':'')+
     (p.noClock?' <span title="Rostered but no timesheet (didn&#39;t clock in) – counted from the roster. Fix the timesheet in Roubler." style="display:inline-block;font-size:11px;font-weight:700;color:#FFFFFF;background:var(--warn);border-radius:4px;padding:0 5px">no clock-in'+(p.noClock>1?' ×'+p.noClock:'')+'</span>':'')+'</span>'+
     '<span>'+(Math.round(p.hours*100)/100)+'</span>'+
     '<span>'+ph(p.basePerHour)+'</span>'+
