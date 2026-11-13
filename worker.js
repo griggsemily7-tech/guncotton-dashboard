@@ -1663,9 +1663,12 @@ export default {
       try {
         const locationIds = await squareLocationIds(env);
         const data = await squareApi(env, '/v2/orders/search', 'POST', { location_ids: locationIds, limit: 500, query: { filter: { state_filter: { states: ['COMPLETED'] }, date_time_filter: { closed_at: { start_at: date + 'T00:00:00+10:00', end_at: date + 'T23:59:59+10:00' } } } } });
-        const items = {};
+        const items = {}, unnamed = [];
         (data.orders || []).forEach((o) => (o.line_items || []).forEach((li) => {
-          const it = items[li.name] || (items[li.name] = { qty: 0, variationNames: {}, modifierNames: {}, notes: {} });
+          // Lines with no name at all (these show as "Item" / land in Uncategorised): list what else the till recorded for them.
+          if (!li.name && unnamed.length < 8) unnamed.push({ itemType: li.item_type || null, note: li.note || null, variationName: li.variation_name || null, inCatalogue: !!li.catalog_object_id,
+            saleTicketName: o.ticket_name || null, saleReferenceId: o.reference_id || null, saleSource: (o.source && o.source.name) || null, modifiers: (li.modifiers || []).map((m) => m.name), sold: li.quantity, total: ((li.total_money && li.total_money.amount) || 0) / 100 });
+          const it = items[li.name || '(no name)'] || (items[li.name || '(no name)'] = { qty: 0, variationNames: {}, modifierNames: {}, notes: {} });
           if (li.note) it.notes[li.note] = (it.notes[li.note] || 0) + (parseFloat(li.quantity) || 0);
           const q = parseFloat(li.quantity) || 0; it.qty += q;
           const vn = li.variation_name == null ? '(none)' : li.variation_name; it.variationNames[vn] = (it.variationNames[vn] || 0) + q;
@@ -1673,7 +1676,7 @@ export default {
         }));
         const want = (url.searchParams.get('item') || '').toLowerCase();
         const top = Object.entries(items).filter(([n]) => !want || n.toLowerCase().includes(want)).sort((a, b) => b[1].qty - a[1].qty).slice(0, want ? 30 : 12).map(([name, v]) => ({ name, qty: v.qty, variationNames: v.variationNames, modifierNames: v.modifierNames, notes: v.notes }));
-        return json({ date, ordersFound: (data.orders || []).length, topItems: top });
+        return json({ date, ordersFound: (data.orders || []).length, topItems: top, linesWithNoName: unnamed });
       } catch (e) { return json({ error: String(e && e.message || e) }); }
     }
     if (path === '/api/square-breakdown') {
