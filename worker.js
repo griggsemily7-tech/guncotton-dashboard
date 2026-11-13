@@ -638,7 +638,7 @@ async function roublerPayRunRates(env, token) {
 }
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw18:' + from + ':' + to, incToday ? 300 : 3600, async () => {
+  return cached(env, 'rbw19:' + from + ':' + to, incToday ? 300 : 3600, async () => {
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
@@ -673,7 +673,10 @@ async function roublerWages(env, from, to) {
       return (Y - y - ((M < m || (M === m && D < dd)) ? 1 : 0)) < 18;
     };
     let rows = ((ts && ts.data && ts.data.timesheets) || []).map((t) => ({ ...t, kind: 'timesheet' }))
-      .filter((t) => toBrisbane(new Date(t.startTime)).dateStr < today);
+      // A timesheet counts on the day it STARTED. Roubler also returns timesheets that merely overlap the dates asked for,
+      // e.g. one left open from yesterday (someone forgot to clock out) that runs into today. Without this, that long
+      // timesheet was being counted in today's total as well.
+      .filter((t) => { const d = toBrisbane(new Date(t.startTime)).dateStr; return d < today && d >= from && d <= to; });
     // Today hasn't been clocked off yet, so today uses the roster (rostered shifts and their cost).
     if (to >= today && from <= today) {
       const sh = shRes;
@@ -752,11 +755,12 @@ async function roublerWages(env, from, to) {
       const pr = ppl[id] || (ppl[id] = { name: (r.employee && r.employee.fullName || 'Unknown').replace(/\s+/g, ' ').trim(), hours: 0, cost: 0, base: 0, sup: 0, leave: 0, salaried, estimated: false, sections: {} });
       pr.hours += hrs; pr.cost += total; pr.base += base; pr.sup += sup; pr.leave += leave;
       if (r.kind === 'rosterOnly') pr.noClock = (pr.noClock || 0) + 1;
+      if (r.kind === 'timesheet' && (r.hours || 0) > 12) pr.longShift = (pr.longShift || 0) + 1;   // probably forgot to clock out
       if (est) pr.estimated = true; if (cls.section) pr.sections[cls.section] = true;
     });
     Object.keys(people).forEach((v) => {
       out[v].people = Object.values(people[v]).map((p) => ({ name: p.name, hours: p.hours, cost: p.cost, perHour: p.hours ? p.cost / p.hours : 0,
-        noClock: p.noClock || 0, salaried: p.salaried, basePerHour: p.hours ? p.base / p.hours : 0, superPerHour: p.hours ? p.sup / p.hours : 0, leavePerHour: p.hours ? p.leave / p.hours : 0,
+        noClock: p.noClock || 0, longShift: p.longShift || 0, salaried: p.salaried, basePerHour: p.hours ? p.base / p.hours : 0, superPerHour: p.hours ? p.sup / p.hours : 0, leavePerHour: p.hours ? p.leave / p.hours : 0,
         estimated: p.estimated, section: Object.keys(p.sections).length === 1 ? Object.keys(p.sections)[0] : (Object.keys(p.sections).length ? 'both' : null) }))
         .sort((a, b) => b.cost - a.cost);
     });
