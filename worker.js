@@ -606,6 +606,34 @@ const addDaysStr = (d, n) => { const x = new Date(d + 'T00:00:00Z'); x.setUTCDat
 const VENUE_OVERRIDES = [
   { name: 'maria maldonado daza', from: '2026-11-13', to: '2026-11-13', venue: 'guncotton', section: 'kitchen' }
 ];
+// Days when one shift was split between the two venues. Between those times (Brisbane time) they count at `venue`;
+// the rest of the shift counts at `otherwise`. Hours and cost are split by time.
+const TIME_OVERRIDES = [
+  { name: 'kailee freeman', from: '2026-11-14', to: '2026-11-14', between: ['08:30', '13:00'], venue: 'doughgirlz', otherwise: { venue: 'guncotton', section: 'foh' } }
+];
+const timeOverrideFor = (fullName, day) => {
+  const n = String(fullName || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  return TIME_OVERRIDES.find((o) => o.name === n && day >= o.from && day <= o.to) || null;
+};
+function applyTimeOverrides(rows) {
+  const out = [], now = Date.now();
+  rows.forEach((r) => {
+    const day = toBrisbane(new Date(r.startTime)).dateStr, o = timeOverrideFor(r.employee && r.employee.fullName, day);
+    const st = new Date(r.startTime).getTime(), en = r.endTime ? new Date(r.endTime).getTime() : 0;
+    if (!o || !(en > st)) { out.push(r); return; }
+    const w0 = new Date(day + 'T' + o.between[0] + ':00+10:00').getTime(), w1 = new Date(day + 'T' + o.between[1] + ':00+10:00').getTime();
+    const piece = (a, b, dest) => {
+      if (!(b > a)) return;
+      const share = (b - a) / (en - st);
+      out.push({ ...r, startTime: new Date(a).toISOString(), endTime: new Date(b).toISOString(), hours: (r.hours || 0) * share, cost: r.cost == null ? null : r.cost * share,
+        frac: r.kind === 'shift' ? Math.max(0, Math.min(1, (now - a) / (b - a))) : r.frac, _ov: dest });
+    };
+    const a = Math.max(st, w0), b = Math.min(en, w1), other = o.otherwise;
+    if (!(b > a)) { piece(st, en, other); return; }
+    piece(st, a, other); piece(a, b, { venue: o.venue, section: o.section || null }); piece(b, en, other);
+  });
+  return out;
+}
 const venueOverrideFor = (fullName, day) => {
   const n = String(fullName || '').toLowerCase().replace(/\s+/g, ' ').trim();
   return VENUE_OVERRIDES.find((o) => o.name === n && day >= o.from && day <= o.to) || null;
@@ -638,7 +666,7 @@ async function roublerPayRunRates(env, token) {
 }
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw20:' + from + ':' + to, incToday ? 300 : 3600, async () => {
+  return cached(env, 'rbw22:' + from + ':' + to, incToday ? 300 : 3600, async () => {
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
@@ -647,7 +675,7 @@ async function roublerWages(env, from, to) {
     const empP = (ROUBLER_EMP_MEMO.t && Date.now() - ROUBLER_EMP_MEMO.t < 3600000) ? Promise.resolve(ROUBLER_EMP_MEMO.v)
       : roublerGraphQL(env, { operationName: 'Emp', query: 'query Emp { employees { id fullName payBasis payType payLevel { id name } position { name } person { dateOfBirth } } }' }, {}, token)
           .then((v) => { ROUBLER_EMP_MEMO.v = v; ROUBLER_EMP_MEMO.t = Date.now(); return v; });
-    const tsP = roublerGraphQL(env, { operationName: 'Ts', query: 'query Ts($s: DateTime!, $e: DateTime!) { timesheets(startTime: $s, endTime: $e, includePending: true) { startTime hours cost status employee { id fullName } location { name } position { name } } }' }, { s: start, e: end }, token);
+    const tsP = roublerGraphQL(env, { operationName: 'Ts', query: 'query Ts($s: DateTime!, $e: DateTime!) { timesheets(startTime: $s, endTime: $e, includePending: true) { startTime endTime hours cost status employee { id fullName } location { name } position { name } } }' }, { s: start, e: end }, token);
     const shP = inclToday ? roublerGraphQL(env, { operationName: 'Sh', query: 'query Sh($s: DateTime!, $e: DateTime!) { shifts(startTime: $s, endTime: $e, includeCostings: true) { startTime endTime hours cost published employee { id fullName } location { name } position { name } } }' }, { s: today + 'T00:00:00+10:00', e: today + 'T23:59:59+10:00' }, token) : Promise.resolve(null);
     const pastEnd = (to < today ? to : addDaysStr(today, -1));
     const rosterP = from <= pastEnd ? roublerGraphQL(env, { operationName: 'Ro', query: 'query Ro($s: DateTime!, $e: DateTime!) { shifts(startTime: $s, endTime: $e, includeCostings: true) { startTime endTime hours cost published employee { id fullName } location { name } position { name } } }' }, { s: start, e: pastEnd + 'T23:59:59+10:00' }, token).catch(() => null) : Promise.resolve(null);
@@ -704,6 +732,7 @@ async function roublerWages(env, from, to) {
       if (day < from || day > pastEnd || hadTimesheet.has(x.employee.id + '|' + day)) return;
       rows.push({ ...x, kind: 'rosterOnly' });
     });
+    rows = applyTimeOverrides(rows);
     const rate = {}; let allCost = 0, allHrs = 0;
     rows.forEach((r) => { if (r.cost != null && r.hours > 0) { const id = r.employee && r.employee.id; const x = rate[id] || (rate[id] = { c: 0, h: 0 }); x.c += r.cost / 100; x.h += r.hours; allCost += r.cost / 100; allHrs += r.hours; } });
     const avg = allHrs ? allCost / allHrs : 0;
@@ -729,13 +758,14 @@ async function roublerWages(env, from, to) {
       // A day where someone actually worked at the other venue from what Roubler says (see VENUE_OVERRIDES).
       const ov = venueOverrideFor(r.employee && r.employee.fullName, toBrisbane(new Date(r.startTime)).dateStr);
       if (ov) cls = { venue: ov.venue, section: ov.venue === 'guncotton' ? (ov.section || 'foh') : null };
-      // Today: rostered, their shift started over an hour ago, and they haven't clocked in = most likely didn't turn up.
-      // Not counted (and listed under the staff table so a forgotten clock-in is easy to spot).
+      if (r._ov) cls = { venue: r._ov.venue, section: r._ov.venue === 'guncotton' ? (r._ov.section || 'foh') : null };
+      // Today: rostered, their shift started over an hour ago, and they haven't clocked in. They're still COUNTED (people
+      // often forget to clock in), but flagged so it's easy to spot, in the staff table and in the note under it.
       if (r.kind === 'shift' && clocksOk && !clockedIn.has(String(id)) && Date.now() > new Date(r.startTime).getTime() + 60 * 60000) {
         const list = (notClocked[cls.venue] = notClocked[cls.venue] || {});
         const nm = (r.employee && r.employee.fullName || 'Unknown').replace(/\s+/g, ' ').trim();
         list[nm] = (list[nm] || 0) + (r.hours || 0);
-        return;
+        r._nc = true;
       }
       const f = r.kind === 'shift' ? r.frac : 1;
       let cost = r.cost != null ? r.cost / 100 : null, est = false;
@@ -767,13 +797,14 @@ async function roublerWages(env, from, to) {
       const pr = ppl[id] || (ppl[id] = { name: (r.employee && r.employee.fullName || 'Unknown').replace(/\s+/g, ' ').trim(), hours: 0, cost: 0, base: 0, sup: 0, leave: 0, salaried, estimated: false, sections: {} });
       pr.hours += hrs; pr.cost += total; pr.base += base; pr.sup += sup; pr.leave += leave;
       if (r.kind === 'rosterOnly') pr.noClock = (pr.noClock || 0) + 1;
+      if (r._nc) pr.notClockedIn = true;
       if (r.kind === 'timesheet' && (r.hours || 0) > 12) pr.longShift = (pr.longShift || 0) + 1;   // probably forgot to clock out
       if (est) pr.estimated = true; if (cls.section) pr.sections[cls.section] = true;
     });
     Object.keys(notClocked).forEach((v) => { out[v].notClockedIn = Object.entries(notClocked[v]).map(([name, hours]) => ({ name, hours })); });
     Object.keys(people).forEach((v) => {
       out[v].people = Object.values(people[v]).map((p) => ({ name: p.name, hours: p.hours, cost: p.cost, perHour: p.hours ? p.cost / p.hours : 0,
-        noClock: p.noClock || 0, longShift: p.longShift || 0, salaried: p.salaried, basePerHour: p.hours ? p.base / p.hours : 0, superPerHour: p.hours ? p.sup / p.hours : 0, leavePerHour: p.hours ? p.leave / p.hours : 0,
+        notClockedIn: !!p.notClockedIn, noClock: p.noClock || 0, longShift: p.longShift || 0, salaried: p.salaried, basePerHour: p.hours ? p.base / p.hours : 0, superPerHour: p.hours ? p.sup / p.hours : 0, leavePerHour: p.hours ? p.leave / p.hours : 0,
         estimated: p.estimated, section: Object.keys(p.sections).length === 1 ? Object.keys(p.sections)[0] : (Object.keys(p.sections).length ? 'both' : null) }))
         .sort((a, b) => b.cost - a.cost);
     });
