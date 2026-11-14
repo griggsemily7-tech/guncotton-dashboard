@@ -928,7 +928,7 @@ function renderBanner(data){
 // front of house and kitchen with a subtotal for each.
 function renderStaff(rb, revenue){
   const sec = document.getElementById('staffSection'), el = document.getElementById('staff');
-  if(!rb || !rb.people || !rb.people.length){ sec.style.display = 'none'; return; }
+  if(!rb || ((!rb.people || !rb.people.length) && !(rb.notClockedIn && rb.notClockedIn.length))){ sec.style.display = 'none'; return; }
   sec.style.display = 'block';
   const pv = document.getElementById('period').value;
   const rr = rangeFor(pv), multiDay = rr.from !== rr.to;
@@ -960,7 +960,11 @@ function renderStaff(rb, revenue){
   if(rb.rostered) notes.push('today counts shifts so far, from the roster');
   if(rb.people.some(p=>p.estimated)) notes.push('* includes an estimate (timesheet not costed yet)');
   if(rb.people.some(p=>p.noClock)) notes.push('“no clock-in” = rostered but no timesheet, so their rostered shift is counted – fix the timesheet in Roubler so they get paid correctly');
-  el.innerHTML = html + '<div style="color:var(--muted);font-size:12px;margin:12px 6px 0">'+notes.join(' · ')+'</div>';
+  // Today: rostered people who haven't clocked in (shift started over an hour ago) aren't counted.
+  const nc = (rb.notClockedIn||[]).filter(x=>x.hours>0);
+  const ncHtml = nc.length ? '<div style="margin:12px 6px 0;padding:8px 10px;border-radius:8px;background:rgba(245,158,11,.12);font-size:13px"><b style="color:var(--warn)">Rostered but not clocked in (not counted):</b> '+
+    nc.map(x=>escHtml(x.name)+' ('+(Math.round(x.hours*10)/10)+'h)').join(', ')+'<div style="color:var(--muted);font-size:12px;margin-top:2px">If they are actually working, ask them to clock in. If they didn\'t work, remove the shift from the roster in Roubler.</div></div>' : '';
+  el.innerHTML = html + ncHtml + '<div style="color:var(--muted);font-size:12px;margin:12px 6px 0">'+notes.join(' · ')+'</div>';
 }
 
 function renderCards(data){
