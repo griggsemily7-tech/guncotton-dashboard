@@ -451,24 +451,29 @@ function toBrisbane(dateObj) {
   const dateStr = d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0') + '-' + String(d.getUTCDate()).padStart(2, '0');
   return { dateStr, hour: d.getUTCHours() };
 }
-async function squareFetchPayments(env, from, to) {
+async function squareFetchPayments(env, from, to, venue) {
   if (!env.POS_API_TOKEN) { const e = new Error('no token'); e.status = 401; throw e; }
   const base = 'https://connect.squareup.com';
-  let cursor = null, iterations = 0;
   const out = [];
-  do {
-    const params = new URLSearchParams({ begin_time: from + 'T00:00:00+10:00', end_time: to + 'T23:59:59+10:00', sort_order: 'ASC' });
-    if (cursor) params.set('cursor', cursor);
-    const res = await fetch(base + '/v2/payments?' + params.toString(), {
-      headers: { Authorization: 'Bearer ' + env.POS_API_TOKEN, 'Square-Version': '2025-01-23' }
-    });
-    if (!res.ok) { const e = new Error('square failed'); e.status = res.status; throw e; }
-    const data = await res.json();
-    for (const p of data.payments || []) {
-      if (p.status === 'COMPLETED') out.push({ createdAt: new Date(p.created_at), amountCents: (p.total_money && p.total_money.amount) || 0 });
-    }
-    cursor = data.cursor; iterations++;
-  } while (cursor && iterations < 20);
+  let locationIds = [];
+  try { locationIds = await squareLocationIds(env, venue); } catch (err) {}   // if locations can't be read, fall back to everything
+  for (const locationId of (locationIds.length ? locationIds : [null])) {
+    let cursor = null, iterations = 0;
+    do {
+      const params = new URLSearchParams({ begin_time: from + 'T00:00:00+10:00', end_time: to + 'T23:59:59+10:00', sort_order: 'ASC' });
+      if (locationId) params.set('location_id', locationId);
+      if (cursor) params.set('cursor', cursor);
+      const res = await fetch(base + '/v2/payments?' + params.toString(), {
+        headers: { Authorization: 'Bearer ' + env.POS_API_TOKEN, 'Square-Version': '2025-01-23' }
+      });
+      if (!res.ok) { const e = new Error('square failed'); e.status = res.status; throw e; }
+      const data = await res.json();
+      for (const p of data.payments || []) {
+        if (p.status === 'COMPLETED') out.push({ createdAt: new Date(p.created_at), amountCents: (p.total_money && p.total_money.amount) || 0 });
+      }
+      cursor = data.cursor; iterations++;
+    } while (cursor && iterations < 20);
+  }
   return out;
 }
 function listDates(from, to) {
@@ -485,7 +490,7 @@ async function squareDailySummary(env, from, to, budget) {
   budget = budget || { left: 10 };
   const today = toBrisbane(new Date()).dateStr;
   const dates = listDates(from, to).filter((d) => d <= today);
-  const cachedVals = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqday:' + d) : null)));
+  const cachedVals = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqday2:' + d) : null)));
   const days = [];
   let pending = 0;
   for (let i = 0; i < dates.length; i++) {
@@ -495,7 +500,7 @@ async function squareDailySummary(env, from, to, budget) {
       if (d < today && budget.left <= 0) { pending++; continue; }
       const payments = await squareFetchPayments(env, d, d);
       rec = { count: payments.length, cents: payments.reduce((a, p) => a + p.amountCents, 0) };
-      if (d < today) { await env.TOKENS.put('sqday:' + d, JSON.stringify(rec)); budget.left--; }
+      if (d < today) { await env.TOKENS.put('sqday2:' + d, JSON.stringify(rec)); budget.left--; }
     }
     // Square's totals are GST-inclusive; every other figure on this dashboard is ex-GST, so back out the standard 10%.
     days.push({ date: d, count: rec.count, sales: (rec.cents / 100) / 1.1 });
@@ -819,11 +824,19 @@ function finishItem(it) {
   const details = (Array.isArray(it.details) ? it.details : Object.values(it.details || {})).sort((a, b) => b.qty - a.qty);
   return { ...it, sizes, details };
 }
-async function squareLocationIds(env) {
-  return cached(env, 'status-cache:sqlocs', 3600, async () => {
+// Both cafes now use Square, so each Square location belongs to one venue, matched by its name. If a venue's name
+// doesn't match any location, all locations are used (the old behaviour, when Square was Doughgirlz only).
+const SQUARE_VENUE_LOCATIONS = { doughgirlz: /dough/i, guncotton: /gun|cotton|caf[eé]/i };
+async function squareLocations(env) {
+  return cached(env, 'status-cache:sqlocs2', 3600, async () => {
     const data = await squareApi(env, '/v2/locations');
-    return (data.locations || []).filter((l) => l.status === 'ACTIVE').map((l) => l.id);
+    return (data.locations || []).filter((l) => l.status === 'ACTIVE').map((l) => ({ id: l.id, name: l.name || '' }));
   });
+}
+async function squareLocationIds(env, venue) {
+  const locs = await squareLocations(env), rx = SQUARE_VENUE_LOCATIONS[venue || 'doughgirlz'];
+  const picked = rx ? locs.filter((l) => rx.test(l.name)) : [];
+  return (picked.length ? picked : locs).map((l) => l.id);
 }
 const squareCatIdOf = (item) => {
   const d = item && item.item_data; if (!d) return null;
@@ -1675,6 +1688,20 @@ export default {
     }
     // Read-only check: for one day, the most-sold items with the size (variation) names and the modifier names the
     // till sent for each. Shows whether sizes arrive as variations or as modifiers. Item names and counts only.
+    if (path === '/api/square-locations-check') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      try {
+        const locs = await squareLocations(env);
+        const today = toBrisbane(new Date()).dateStr, out = { today, locations: [] };
+        for (const l of locs) {
+          const pay = await (async () => { const r = await fetch('https://connect.squareup.com/v2/payments?' + new URLSearchParams({ begin_time: today + 'T00:00:00+10:00', end_time: today + 'T23:59:59+10:00', location_id: l.id }).toString(), { headers: { Authorization: 'Bearer ' + env.POS_API_TOKEN, 'Square-Version': '2025-01-23' } }); return r.ok ? ((await r.json()).payments || []).filter((p) => p.status === 'COMPLETED') : null; })();
+          out.locations.push({ name: l.name, id: l.id, countedAs: Object.keys(SQUARE_VENUE_LOCATIONS).filter((v) => SQUARE_VENUE_LOCATIONS[v].test(l.name)), todayPayments: pay ? pay.length : 'could not read', todaySalesInclGst: pay ? Math.round(pay.reduce((a, p) => a + ((p.total_money && p.total_money.amount) || 0), 0)) / 100 : null });
+        }
+        out.doughgirlzUses = (await squareLocationIds(env, 'doughgirlz')).map((id) => (locs.find((l) => l.id === id) || {}).name);
+        out.gunCottonWillUse = (await squareLocationIds(env, 'guncotton')).map((id) => (locs.find((l) => l.id === id) || {}).name);
+        return json(out);
+      } catch (e) { return json({ error: String(e && e.message || e) }); }
+    }
     if (path === '/api/discount-names-check') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       const date = url.searchParams.get('date'), to = url.searchParams.get('to') || date;
