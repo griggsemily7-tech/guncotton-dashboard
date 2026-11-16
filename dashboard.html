@@ -365,7 +365,7 @@ async function fetchData(silent){
   renderCards(data);
   renderConnections(data);
   if(currentVenue==='guncotton') fetchBepozHealth(myGen); else document.getElementById('bepozHealthBanner').innerHTML = '';
-  const posLabel = currentVenue==='guncotton' ? 'Bepoz' : 'Square';
+  const posLabel = 'Square';   // today's sales are always Square now
   document.getElementById('bpzHoursTitle').textContent = 'Hourly sales today · from '+posLabel;
   const granularity = {day:'Daily', week:'Weekly', month:'Monthly'}[rowModeFor(period)];
   document.getElementById('dailyTitle').textContent = granularity+' sales this period · from '+posLabel;
@@ -512,8 +512,8 @@ async function loadDrill(row){
   try{
     // A week row (data-to) combines every day in that week; a day/hour row asks for just that day or hour.
     const q = row.dataset.to
-      ? '/api/square-breakdown-range?from='+row.dataset.date+'&to='+row.dataset.to
-      : '/api/square-breakdown?date='+row.dataset.date+(row.dataset.hour!=null?'&hour='+row.dataset.hour:'');
+      ? '/api/square-breakdown-range?from='+row.dataset.date+'&to='+row.dataset.to+'&venue='+currentVenue
+      : '/api/square-breakdown?date='+row.dataset.date+(row.dataset.hour!=null?'&hour='+row.dataset.hour:'')+'&venue='+currentVenue;
     const res = await fetch(q, {cache:'no-store'});
     const data = await res.json();
     let html = renderBreakdown(data);
@@ -550,6 +550,7 @@ document.addEventListener('click', (e)=>{
 // Till figures are shown incl. GST (what the till took). Revenue stays ex-GST underneath so
 // COGS %, wage %, profit $ and profit % still compare like-for-like with Xero's ex-GST costs.
 const GST = 1.1;
+const SQUARE_NEW_FROM = '2026-11-17';   // both venues are on the new Square account from this day (Gun Cotton was on Bepoz before)
 
 // ---- Doughgirlz sales goals (from the Weekly Gross Sales Tracker) ----
 // Items-sold goals per category per weekday, and the set average price per item (incl. GST).
@@ -712,7 +713,7 @@ async function fetchPosHours(myGen, silent){
     const data = await res.json();
     if(myGen !== fetchGen) return;
     if(!data.hours || !data.hours.length){ el.innerHTML = '<span style="color:var(--muted)">No sales recorded yet today</span>'; return; }
-    const canDrill = currentVenue==='doughgirlz';
+    const canDrill = true;   // both venues are on Square today
     setPanel(el, data.hours.map(h=>{
       const hr = parseInt(h.hourLabel.split(':')[0],10);
       const attrs = canDrill ? ' drill" data-date="'+dateStr+'" data-hour="'+hr : '';
@@ -738,8 +739,9 @@ async function fetchDailySales(r, myGen, silent, period){
     const narrow = window.innerWidth < 600;
     const mode = rowModeFor(period);
     const money = (n)=> '$'+n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
-    const canDrill = currentVenue==='doughgirlz' && (mode==='day' || mode==='week');
+    const canDrillMode = (mode==='day' || mode==='week');
     const row = (a,b,count,sales,date,to)=> {
+      const canDrill = canDrillMode && (currentVenue==='doughgirlz' || (to || date) >= SQUARE_NEW_FROM);   // Gun Cotton: Bepoz days have no item detail
       const attrs = (canDrill && date) ? ' drill" data-date="'+date+(to ? '" data-to="'+to : '') : '';
       return '<div class="drow'+attrs+'"><span>'+(attrs?'<span class="chev">▸</span>':'')+a+'</span><span>'+b+'</span><span>'+count+' txns</span><span>'+money(sales*GST)+'</span></div>'+
         (attrs ? '<div class="detail" style="display:none"></div>' : '');
