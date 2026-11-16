@@ -451,12 +451,23 @@ function toBrisbane(dateObj) {
   const dateStr = d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0') + '-' + String(d.getUTCDate()).padStart(2, '0');
   return { dateStr, hour: d.getUTCHours() };
 }
-async function squareFetchPayments(env, from, to, venue) {
-  if (!env.POS_API_TOKEN) { const e = new Error('no token'); e.status = 401; throw e; }
+// ---- Two Square accounts ----
+// 'old' = the original Doughgirlz account (POS_API_TOKEN): used for days before SQUARE_NEW_FROM.
+// 'new' = the new account that has both venues in it (POS_API_TOKEN_2): used from SQUARE_NEW_FROM on.
+// Gun Cotton was on Bepoz before then. (The evening of 16 Nov in the new account was set-up, so it's left out.)
+const SQUARE_NEW_FROM = '2026-11-17';
+const sqToken = (env, acct) => (acct === 'new' ? env.POS_API_TOKEN_2 : env.POS_API_TOKEN);
+const sqAcctFor = (dateStr) => (dateStr >= SQUARE_NEW_FROM ? 'new' : 'old');
+async function squareFetchPayments(env, from, to, venue, acct) {
+  acct = acct || 'old';
+  const token = sqToken(env, acct);
+  if (!token) { const e = new Error('no token'); e.status = 401; throw e; }
   const base = 'https://connect.squareup.com';
   const out = [];
   let locationIds = [];
-  try { locationIds = await squareLocationIds(env, venue); } catch (err) {}   // if locations can't be read, fall back to everything
+  try { locationIds = await squareLocationIds(env, venue, acct); } catch (err) { if (acct === 'new') throw err; }
+  // The new account holds both venues, so never fall back to "every location" there.
+  if (acct === 'new' && !locationIds.length) return out;
   for (const locationId of (locationIds.length ? locationIds : [null])) {
     let cursor = null, iterations = 0;
     do {
@@ -464,7 +475,7 @@ async function squareFetchPayments(env, from, to, venue) {
       if (locationId) params.set('location_id', locationId);
       if (cursor) params.set('cursor', cursor);
       const res = await fetch(base + '/v2/payments?' + params.toString(), {
-        headers: { Authorization: 'Bearer ' + env.POS_API_TOKEN, 'Square-Version': '2025-01-23' }
+        headers: { Authorization: 'Bearer ' + token, 'Square-Version': '2025-01-23' }
       });
       if (!res.ok) { const e = new Error('square failed'); e.status = res.status; throw e; }
       const data = await res.json();
@@ -486,11 +497,13 @@ function listDates(from, to) {
 // periods (a month, a year) used to be cut off at ~2,000 payments. Finished days never change, so each one
 // is fetched once and its totals stored; today is always fetched live. A few uncached days are filled in per
 // request (budget.left), so a long period completes over the next refresh or two (`pending` = days still to load).
-async function squareDailySummary(env, from, to, budget) {
+async function squareDailySummary(env, from, to, budget, venue) {
+  venue = venue || 'doughgirlz';
   budget = budget || { left: 10 };
   const today = toBrisbane(new Date()).dateStr;
-  const dates = listDates(from, to).filter((d) => d <= today);
-  const cachedVals = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqday2:' + d) : null)));
+  // Gun Cotton's sales were in Bepoz before the switch, so Square only has them from SQUARE_NEW_FROM.
+  const dates = listDates(from, to).filter((d) => d <= today && (venue !== 'guncotton' || d >= SQUARE_NEW_FROM));
+  const cachedVals = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqday3:' + venue + ':' + d) : null)));
   const days = [];
   let pending = 0;
   for (let i = 0; i < dates.length; i++) {
@@ -498,18 +511,26 @@ async function squareDailySummary(env, from, to, budget) {
     let rec = cachedVals[i] ? JSON.parse(cachedVals[i]) : null;
     if (!rec) {
       if (d < today && budget.left <= 0) { pending++; continue; }
-      const payments = await squareFetchPayments(env, d, d);
+      const payments = await squareFetchPayments(env, d, d, venue, sqAcctFor(d));
       rec = { count: payments.length, cents: payments.reduce((a, p) => a + p.amountCents, 0) };
-      if (d < today) { await env.TOKENS.put('sqday2:' + d, JSON.stringify(rec)); budget.left--; }
+      if (d < today) { await env.TOKENS.put('sqday3:' + venue + ':' + d, JSON.stringify(rec)); budget.left--; }
     }
     // Square's totals are GST-inclusive; every other figure on this dashboard is ex-GST, so back out the standard 10%.
     days.push({ date: d, count: rec.count, sales: (rec.cents / 100) / 1.1 });
   }
   return { days, pending };
 }
-async function squareCount(env, from, to, budget) {
-  const { days, pending } = await squareDailySummary(env, from, to, budget);
+async function squareCount(env, from, to, budget, venue) {
+  const { days, pending } = await squareDailySummary(env, from, to, budget, venue);
   return { count: days.reduce((a, d) => a + d.count, 0), salesExGst: days.reduce((a, d) => a + d.sales, 0), pending };
+}
+// Gun Cotton by day: Bepoz up to the switch, Square (the new account) from then on.
+async function gcDaily(env, from, to, budget) {
+  const bepTo = to < SQUARE_NEW_FROM ? to : addDaysStr(SQUARE_NEW_FROM, -1);
+  const bep = from <= bepTo ? await bepozDailyBreakdown(env, from, bepTo) : [];
+  let sq = { days: [], pending: 0 };
+  if (to >= SQUARE_NEW_FROM && env.POS_API_TOKEN_2) sq = await squareDailySummary(env, from, to, budget, 'guncotton');
+  return { days: [...bep, ...sq.days], pending: sq.pending };
 }
 function bucketPaymentsHourly(payments, targetDateStr) {
   const buckets = {};
@@ -535,10 +556,10 @@ function bucketPaymentsDaily(payments) {
   return Object.keys(buckets).sort().map((d) => ({ date: d, count: buckets[d].count, sales: (buckets[d].cents / 100) / 1.1 }));
 }
 /* ---------------- Square item / category breakdown ---------------- */
-async function squareApi(env, path, method, body) {
+async function squareApi(env, path, method, body, acct) {
   const res = await fetch('https://connect.squareup.com' + path, {
     method: method || 'GET',
-    headers: { Authorization: 'Bearer ' + env.POS_API_TOKEN, 'Square-Version': '2025-01-23', 'Content-Type': 'application/json' },
+    headers: { Authorization: 'Bearer ' + sqToken(env, acct), 'Square-Version': '2025-01-23', 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined
   });
   const data = await res.json().catch(() => ({}));
@@ -550,22 +571,22 @@ async function squareApi(env, path, method, body) {
   return data;
 }
 // Name lookups for the discount list. Results are stored, so each customer / team member is only fetched once.
-async function squareCustomerName(env, id) {
+async function squareCustomerName(env, id, acct) {
   const key = 'sqcust:' + id;
   const hit = await env.TOKENS.get(key); if (hit !== null) return hit || null;
-  const d = await squareApi(env, '/v2/customers/' + encodeURIComponent(id));
+  const d = await squareApi(env, '/v2/customers/' + encodeURIComponent(id), undefined, undefined, acct);
   const c = d.customer || {};
   const name = [c.given_name, c.family_name].filter(Boolean).join(' ') || c.company_name || c.nickname || '';
   try { await env.TOKENS.put(key, name, { expirationTtl: 60 * 60 * 24 * 30 }); } catch (e) {}
   return name || null;
 }
-async function squarePaymentStaff(env, paymentId) {
-  const p = (await squareApi(env, '/v2/payments/' + encodeURIComponent(paymentId))).payment || {};
+async function squarePaymentStaff(env, paymentId, acct) {
+  const p = (await squareApi(env, '/v2/payments/' + encodeURIComponent(paymentId), undefined, undefined, acct)).payment || {};
   const tm = p.team_member_id || p.employee_id;
   if (!tm) return null;
   const key = 'sqteam:' + tm;
   const hit = await env.TOKENS.get(key); if (hit !== null) return hit || null;
-  const m = (await squareApi(env, '/v2/team-members/' + encodeURIComponent(tm))).team_member || {};
+  const m = (await squareApi(env, '/v2/team-members/' + encodeURIComponent(tm), undefined, undefined, acct)).team_member || {};
   const name = [m.given_name, m.family_name].filter(Boolean).join(' ');
   try { await env.TOKENS.put(key, name, { expirationTtl: 60 * 60 * 24 * 30 }); } catch (e) {}
   return name || null;
@@ -827,15 +848,16 @@ function finishItem(it) {
 // Both cafes now use Square, so each Square location belongs to one venue, matched by its name. If a venue's name
 // doesn't match any location, all locations are used (the old behaviour, when Square was Doughgirlz only).
 const SQUARE_VENUE_LOCATIONS = { doughgirlz: /dough/i, guncotton: /gun|cotton|caf[eé]/i };
-async function squareLocations(env) {
-  return cached(env, 'status-cache:sqlocs2', 3600, async () => {
-    const data = await squareApi(env, '/v2/locations');
+async function squareLocations(env, acct) {
+  return cached(env, 'status-cache:sqlocs2' + (acct === 'new' ? 'n' : ''), 3600, async () => {
+    const data = await squareApi(env, '/v2/locations', undefined, undefined, acct);
     return (data.locations || []).filter((l) => l.status === 'ACTIVE').map((l) => ({ id: l.id, name: l.name || '' }));
   });
 }
-async function squareLocationIds(env, venue) {
-  const locs = await squareLocations(env), rx = SQUARE_VENUE_LOCATIONS[venue || 'doughgirlz'];
+async function squareLocationIds(env, venue, acct) {
+  const locs = await squareLocations(env, acct), rx = SQUARE_VENUE_LOCATIONS[venue || 'doughgirlz'];
   const picked = rx ? locs.filter((l) => rx.test(l.name)) : [];
+  if (acct === 'new') return picked.map((l) => l.id);   // the new account holds both venues: only the one asked for
   return (picked.length ? picked : locs).map((l) => l.id);
 }
 const squareCatIdOf = (item) => {
@@ -843,12 +865,12 @@ const squareCatIdOf = (item) => {
   return (d.reporting_category && d.reporting_category.id) || (d.categories && d.categories[0] && d.categories[0].id) || d.category_id || null;
 };
 // Maps item-variation ids to { category, item }, remembering answers in KV so the catalog is only asked once per product.
-async function squareCategoriesFor(env, variationIds) {
+async function squareCategoriesFor(env, variationIds, acct) {
   const out = {}, missing = [];
   const hits = await Promise.all(variationIds.map((id) => env.TOKENS.get('sqcat:' + id)));
   variationIds.forEach((id, i) => { if (hits[i]) out[id] = JSON.parse(hits[i]); else missing.push(id); });
   if (!missing.length) return out;
-  const data = await squareApi(env, '/v2/catalog/batch-retrieve', 'POST', { object_ids: missing, include_related_objects: true });
+  const data = await squareApi(env, '/v2/catalog/batch-retrieve', 'POST', { object_ids: missing, include_related_objects: true }, acct);
   const byId = {};
   (data.related_objects || []).forEach((o) => { byId[o.id] = o; });
   (data.objects || []).forEach((o) => { byId[o.id] = o; });
@@ -856,7 +878,7 @@ async function squareCategoriesFor(env, variationIds) {
   const needCats = new Set();
   missing.forEach((vid) => { const cid = squareCatIdOf(itemOf(vid)); if (cid && !byId[cid]) needCats.add(cid); });
   if (needCats.size) {
-    const c = await squareApi(env, '/v2/catalog/batch-retrieve', 'POST', { object_ids: [...needCats] });
+    const c = await squareApi(env, '/v2/catalog/batch-retrieve', 'POST', { object_ids: [...needCats] }, acct);
     (c.objects || []).forEach((o) => { byId[o.id] = o; });
   }
   await Promise.all(missing.map((vid) => {
@@ -868,24 +890,29 @@ async function squareCategoriesFor(env, variationIds) {
   return out;
 }
 // What sold in a day (or one hour of it), grouped by Square category — numbers are Square's own net item figures (after discounts, before tax).
-async function squareBreakdown(env, date, hour) {
+async function squareBreakdown(env, date, hour, venue) {
+  venue = venue || 'doughgirlz';
+  const acct = sqAcctFor(date);
   const pad = (n) => String(n).padStart(2, '0');
   const startIso = date + 'T' + (hour == null ? '00:00:00' : pad(hour) + ':00:00') + '+10:00';
   const endIso = date + 'T' + (hour == null ? '23:59:59' : pad(hour) + ':59:59') + '+10:00';
-  const locationIds = await squareLocationIds(env);
+  const locationIds = await squareLocationIds(env, venue, acct);
   const orders = [];
   let cursor = null, pages = 0;
+  // Gun Cotton was on Bepoz (no item detail) before the switch; and the new account only has the venues' own locations.
+  const noData = (venue === 'guncotton' && date < SQUARE_NEW_FROM) || (acct === 'new' && !locationIds.length) || !sqToken(env, acct);
+  if (noData) return { date, hour: hour == null ? null : hour, orders: 0, totalQty: 0, totalNet: 0, surchargeGross: 0, extras: [], discounts: [], categories: [], noItemData: true };
   do {
     const body = { location_ids: locationIds, limit: 500, query: { filter: { state_filter: { states: ['COMPLETED'] }, date_time_filter: { closed_at: { start_at: startIso, end_at: endIso } } }, sort: { sort_field: 'CLOSED_AT', sort_order: 'ASC' } } };
     if (cursor) body.cursor = cursor;
-    const data = await squareApi(env, '/v2/orders/search', 'POST', body);
+    const data = await squareApi(env, '/v2/orders/search', 'POST', body, acct);
     orders.push(...(data.orders || []));
     cursor = data.cursor; pages++;
   } while (cursor && pages < 10);
   const lines = [];
   orders.forEach((o) => (o.line_items || []).forEach((li) => { li._ticket = o.ticket_name || null; lines.push(li); }));
   const variationIds = [...new Set(lines.map((li) => li.catalog_object_id).filter(Boolean))];
-  const catMap = variationIds.length ? await squareCategoriesFor(env, variationIds) : {};
+  const catMap = variationIds.length ? await squareCategoriesFor(env, variationIds, acct) : {};
   const cats = {};
   let totalQty = 0, totalCents = 0, surchargeCents = 0;
   const amt = (m) => (m && m.amount) || 0;
@@ -1083,10 +1110,10 @@ async function squareBreakdown(env, date, hour) {
       if (!staff || lookups >= 100) continue;
       lookups++;
       // If a name can't be read, say why (e.g. Square permission) instead of quietly showing "no name".
-      try { if (!t.name && custId) t.name = await squareCustomerName(env, custId); } catch (e) { t.lookupError = String(e && e.message || e).slice(0, 120); }
+      try { if (!t.name && custId) t.name = await squareCustomerName(env, custId, acct); } catch (e) { t.lookupError = String(e && e.message || e).slice(0, 120); }
       try {
         const payId = (o.tenders || []).map((x) => x.payment_id || x.id).find(Boolean);
-        if (payId) t.servedBy = await squarePaymentStaff(env, payId);
+        if (payId) t.servedBy = await squarePaymentStaff(env, payId, acct);
       } catch (e) { t.servedByError = String(e && e.message || e).slice(0, 120); }
     }
     r.tx.sort((a, b) => String(a.time).localeCompare(String(b.time)));
@@ -1104,11 +1131,12 @@ async function squareBreakdown(env, date, hour) {
 // Per-day items sold + gross (incl. GST) by Square category — powers the Doughgirlz sales goals panel.
 // Finished days never change, so each is worked out once and stored; today is always live. Only a few
 // uncached days are filled per request (budget.left), so long periods complete over a refresh or two.
-async function squareCategoryDays(env, from, to, budget) {
+async function squareCategoryDays(env, from, to, budget, venue) {
+  venue = venue || 'doughgirlz';
   budget = budget || { left: 4 };
   const today = toBrisbane(new Date()).dateStr;
-  const dates = listDates(from, to).filter((d) => d <= today);
-  const cachedVals = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqgoal13:' + d) : null)));
+  const dates = listDates(from, to).filter((d) => d <= today && (venue !== 'guncotton' || d >= SQUARE_NEW_FROM));
+  const cachedVals = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqgoal14:' + venue + ':' + d) : null)));
   const days = [];
   let pending = 0;
   for (let i = 0; i < dates.length; i++) {
@@ -1116,13 +1144,13 @@ async function squareCategoryDays(env, from, to, budget) {
     let rec = cachedVals[i] ? JSON.parse(cachedVals[i]) : null;
     if (!rec) {
       if (d < today && budget.left <= 0) { pending++; continue; }
-      const b = await squareBreakdown(env, d, null);
+      const b = await squareBreakdown(env, d, null, venue);
       rec = { cats: {} };
       // `units` is the real number of donuts/cookies sold (a box counts as everything inside it); `qty` is the till's
       // item count, where a box is 1.
       b.categories.forEach((c) => { const units = (c.flavours || []).reduce((t, f) => t + (f.qty || 0), 0); rec.cats[c.name] = { qty: c.qty, gross: c.gross, units: units || undefined }; });
       if (b.surchargeGross > 0.005) rec.cats['Surcharges'] = { qty: 0, gross: b.surchargeGross };
-      if (d < today) { await env.TOKENS.put('sqgoal13:' + d, JSON.stringify(rec)); budget.left--; }
+      if (d < today) { await env.TOKENS.put('sqgoal14:' + venue + ':' + d, JSON.stringify(rec)); budget.left--; }
     }
     days.push({ date: d, cats: rec.cats });
   }
@@ -1131,8 +1159,8 @@ async function squareCategoryDays(env, from, to, budget) {
 
 async function squareStatus(env) {
   return cached(env, 'status-cache:square', 60, async () => {
-    if (!env.POS_API_TOKEN) return { connected: false };
-    const res = await fetch('https://connect.squareup.com/v2/locations', { headers: { Authorization: 'Bearer ' + env.POS_API_TOKEN, 'Square-Version': '2025-01-23' } });
+    if (!env.POS_API_TOKEN && !env.POS_API_TOKEN_2) return { connected: false };
+    const res = await fetch('https://connect.squareup.com/v2/locations', { headers: { Authorization: 'Bearer ' + (env.POS_API_TOKEN_2 || env.POS_API_TOKEN), 'Square-Version': '2025-01-23' } });
     if (!res.ok) return { connected: false, error: res.status };
     const data = await res.json();
     const loc = (data.locations || [])[0];
@@ -1196,15 +1224,18 @@ async function slot(env, from, to, trackingIdsList, venue, budget) {
   } catch (e) { out.accountingError = String(e && e.message || e); }
   if (venue === 'guncotton') {
     try {
-      const b = await bepozRangeStats(env, from, to);
-      out.pos = { count: b.count, sales: b.sales };
+      // Bepoz up to the switch, then the new Square account (see SQUARE_NEW_FROM).
+      const g = await gcDaily(env, from, to, budget);
+      const b = { count: g.days.reduce((a, d) => a + d.count, 0), sales: g.days.reduce((a, d) => a + d.sales, 0) };
+      out.pos = { count: b.count, sales: b.sales, pending: g.pending };
+      if (g.days.some((d) => d.date >= SQUARE_NEW_FROM)) await noteSync(env, 'pos');
       // Same situation as Doughgirlz below: Cafe's till sales aren't tagged with a Location in Xero
-      // (only its bills/expenses are), so use Bepoz's own nett-sales total as Revenue instead.
+      // (only its bills/expenses are), so use the till's own total as Revenue instead.
       if (out.accounting) out.accounting.revenue = b.sales;
     } catch (e) {}
-  } else if (env.POS_API_TOKEN) {
+  } else if (env.POS_API_TOKEN || env.POS_API_TOKEN_2) {
     try {
-      out.pos = await squareCount(env, from, to, budget);
+      out.pos = await squareCount(env, from, to, budget, 'doughgirlz');
       await noteSync(env, 'pos');
       // Doughgirlz's Xero tagging isn't reliable yet, but every one of its transactions is genuinely
       // theirs (Square is Doughgirlz-only) — so use Square's own total as revenue here instead of Xero's.
@@ -1357,7 +1388,7 @@ async function apiMetrics(env, url) {
     trackingError,
     sources: {
       accounting: accStatus,
-      pos: { configured: true, connected: venue === 'guncotton' ? true : !!posStatus.connected, org: venue === 'guncotton' ? 'Bepoz' : (posStatus.org || null), sandbox: false, lastSync: await lastSync(env, 'pos') },
+      pos: { configured: true, connected: venue === 'guncotton' ? true : (!!posStatus.connected || !!env.POS_API_TOKEN_2), org: venue === 'guncotton' ? 'Bepoz, then Square' : (posStatus.org || null), sandbox: false, lastSync: await lastSync(env, 'pos') },
       rostering: rosterStatus
     },
     periods
@@ -1490,6 +1521,10 @@ export default {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       const venue = url.searchParams.get('venue');
       const date = url.searchParams.get('date') || new Date().toISOString().slice(0, 10);
+      if (venue === 'guncotton' && date >= SQUARE_NEW_FROM) {
+        try { return json({ date, hours: bucketPaymentsHourly(await squareFetchPayments(env, date, date, 'guncotton', 'new'), date) }); }
+        catch (e) { return json({ date, hours: [], error: String(e && e.message || e) }); }
+      }
       if (venue === 'guncotton') {
         const list = await env.TOKENS.list({ prefix: 'bpzhour:' + date + ':' });
         const hours = [];
@@ -1498,7 +1533,7 @@ export default {
         return json({ date, hours });
       } else {
         try {
-          const payments = await squareFetchPayments(env, date, date);
+          const payments = await squareFetchPayments(env, date, date, 'doughgirlz', sqAcctFor(date));
           const hours = bucketPaymentsHourly(payments, date);
           return json({ date, hours });
         } catch (e) { return json({ date, hours: [], error: String(e && e.message || e) }); }
@@ -1511,11 +1546,11 @@ export default {
       const from = url.searchParams.get('from'), to = url.searchParams.get('to');
       if (!from || !to) return json({ error: 'bad range' }, 400);
       if (venue === 'guncotton') {
-        const days = await bepozDailyBreakdown(env, from, to);
-        return json({ from, to, days });
+        try { const g = await gcDaily(env, from, to, { left: 10 }); return json({ from, to, days: g.days, pending: g.pending }); }
+        catch (e) { return json({ from, to, days: [], error: String(e && e.message || e) }); }
       } else {
         try {
-          const { days, pending } = await squareDailySummary(env, from, to, { left: 10 });
+          const { days, pending } = await squareDailySummary(env, from, to, { left: 10 }, 'doughgirlz');
           return json({ from, to, days, pending });
         } catch (e) { return json({ from, to, days: [], error: String(e && e.message || e) }); }
       }
@@ -1534,12 +1569,13 @@ export default {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json({ error: 'bad date' }, 400);
       try {
         const amt = (m) => (m && m.amount) || 0;
-        const locationIds = await squareLocationIds(env);
+        const xVenue = url.searchParams.get('venue') || 'doughgirlz', xAcct = sqAcctFor(date);
+        const locationIds = await squareLocationIds(env, xVenue, xAcct);
         const orders = []; let cursor = null, pages = 0;
         do {
           const body = { location_ids: locationIds, limit: 500, query: { filter: { state_filter: { states: ['COMPLETED'] }, date_time_filter: { closed_at: { start_at: date + 'T00:00:00+10:00', end_at: date + 'T23:59:59+10:00' } } }, sort: { sort_field: 'CLOSED_AT', sort_order: 'ASC' } } };
           if (cursor) body.cursor = cursor;
-          const data = await squareApi(env, '/v2/orders/search', 'POST', body);
+          const data = await squareApi(env, '/v2/orders/search', 'POST', body, xAcct);
           orders.push(...(data.orders || [])); cursor = data.cursor; pages++;
         } while (cursor && pages < 10);
         const found = [];
@@ -1644,7 +1680,8 @@ export default {
       try {
         const today = toBrisbane(new Date()).dateStr;
         const dates = listDates(from, to).filter((d) => d <= today).slice(0, 31);
-        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd29:' + d) : null)));
+        const bdVenue = url.searchParams.get('venue') || 'doughgirlz';
+        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd30:' + bdVenue + ':' + d) : null)));
         let budget = 4, pending = 0, orders = 0, totalQty = 0, totalNet = 0, surchargeGross = 0;
         const cats = {}, extras = {}, discs = {};
         for (let i = 0; i < dates.length; i++) {
@@ -1652,8 +1689,8 @@ export default {
           let b = stored[i] ? JSON.parse(stored[i]) : null;
           if (!b) {
             if (d < today && budget <= 0) { pending++; continue; }
-            b = await squareBreakdown(env, d, null);
-            if (d < today) { await env.TOKENS.put('sqbd29:' + d, JSON.stringify(b)); budget--; }
+            b = await squareBreakdown(env, d, null, bdVenue);
+            if (d < today) { await env.TOKENS.put('sqbd30:' + bdVenue + ':' + d, JSON.stringify(b)); budget--; }
           }
           orders += b.orders || 0; totalQty += b.totalQty || 0; totalNet += b.totalNet || 0; surchargeGross += b.surchargeGross || 0;
           (b.extras || []).forEach((x) => { extras[x.name] = (extras[x.name] || 0) + (x.gross || 0); });
@@ -1737,12 +1774,13 @@ export default {
       const date = url.searchParams.get('date'), to = url.searchParams.get('to') || date;
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '') || !/^\d{4}-\d{2}-\d{2}$/.test(to || '')) return json({ error: 'add ?date=YYYY-MM-DD (and optionally &to=YYYY-MM-DD, up to 14 days) to the address' }, 400);
       try {
-        const locationIds = await squareLocationIds(env);
+        const dnVenue = url.searchParams.get('venue') || 'doughgirlz';
         const days = []; for (let d = date; d <= to && days.length < 14; d = addDaysStr(d, 1)) days.push(d);
         const total = { staffDiscountSales: 0, withTicketName: 0, withCustomerOnOrder: 0, withCustomerOnPayment: 0, withPickupRecipientName: 0, withItemNote: 0, withNoNameAnywhere: 0 };
         const perDay = []; let cid = null, pid = null;
         for (const d of days) {
-          const data = await squareApi(env, '/v2/orders/search', 'POST', { location_ids: locationIds, limit: 500, query: { filter: { state_filter: { states: ['COMPLETED'] }, date_time_filter: { closed_at: { start_at: d + 'T00:00:00+10:00', end_at: d + 'T23:59:59+10:00' } } } } });
+          const dnAcct = sqAcctFor(d), dnLocs = await squareLocationIds(env, dnVenue, dnAcct);
+          const data = await squareApi(env, '/v2/orders/search', 'POST', { location_ids: dnLocs, limit: 500, query: { filter: { state_filter: { states: ['COMPLETED'] }, date_time_filter: { closed_at: { start_at: d + 'T00:00:00+10:00', end_at: d + 'T23:59:59+10:00' } } } } }, dnAcct);
           const staff = (data.orders || []).filter((o) => (o.discounts || []).some((x) => /staff/i.test(x.name || '')));
           const n = (f) => staff.filter(f).length;
           const hasRecipient = (o) => (o.fulfillments || []).some((f) => f.pickup_details && f.pickup_details.recipient && f.pickup_details.recipient.display_name);
@@ -1755,9 +1793,9 @@ export default {
           pid = pid || staff.map((o) => (o.tenders || []).map((t) => t.payment_id || t.id).find(Boolean)).find(Boolean);
         }
         const out = { from: days[0], to: days[days.length - 1], ...total, perDay };
-        if (cid) { try { const d = await squareApi(env, '/v2/customers/' + encodeURIComponent(cid)); const c = d.customer || {}; out.customerLookup = (c.given_name || c.family_name || c.company_name || c.nickname) ? 'works (name found)' : 'works, but that customer has no name saved'; } catch (e) { out.customerLookup = 'FAILED: ' + String(e && e.message || e).slice(0, 160); } }
+        if (cid) { try { const d = await squareApi(env, '/v2/customers/' + encodeURIComponent(cid), undefined, undefined, sqAcctFor(to)); const c = d.customer || {}; out.customerLookup = (c.given_name || c.family_name || c.company_name || c.nickname) ? 'works (name found)' : 'works, but that customer has no name saved'; } catch (e) { out.customerLookup = 'FAILED: ' + String(e && e.message || e).slice(0, 160); } }
         else out.customerLookup = 'no customer was attached to any staff discount sale in this period';
-        if (pid) { try { const p = (await squareApi(env, '/v2/payments/' + encodeURIComponent(pid))).payment || {}; out.servedBy = (p.team_member_id || p.employee_id) ? 'payment shows who served' : 'payment has no team member'; } catch (e) { out.servedBy = 'FAILED: ' + String(e && e.message || e).slice(0, 160); } }
+        if (pid) { try { const p = (await squareApi(env, '/v2/payments/' + encodeURIComponent(pid), undefined, undefined, sqAcctFor(to))).payment || {}; out.servedBy = (p.team_member_id || p.employee_id) ? 'payment shows who served' : 'payment has no team member'; } catch (e) { out.servedBy = 'FAILED: ' + String(e && e.message || e).slice(0, 160); } }
         return json(out);
       } catch (e) { return json({ error: String(e && e.message || e) }); }
     }
@@ -1766,8 +1804,9 @@ export default {
       const date = url.searchParams.get('date');
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) return json({ error: 'add ?date=YYYY-MM-DD to the address' }, 400);
       try {
-        const locationIds = await squareLocationIds(env);
-        const data = await squareApi(env, '/v2/orders/search', 'POST', { location_ids: locationIds, limit: 500, query: { filter: { state_filter: { states: ['COMPLETED'] }, date_time_filter: { closed_at: { start_at: date + 'T00:00:00+10:00', end_at: date + 'T23:59:59+10:00' } } } } });
+        const szVenue = url.searchParams.get('venue') || 'doughgirlz', szAcct = sqAcctFor(date);
+        const locationIds = await squareLocationIds(env, szVenue, szAcct);
+        const data = await squareApi(env, '/v2/orders/search', 'POST', { location_ids: locationIds, limit: 500, query: { filter: { state_filter: { states: ['COMPLETED'] }, date_time_filter: { closed_at: { start_at: date + 'T00:00:00+10:00', end_at: date + 'T23:59:59+10:00' } } } } }, szAcct);
         const items = {}, unnamed = [];
         (data.orders || []).forEach((o) => (o.line_items || []).forEach((li) => {
           // Lines with no name at all (these show as "Item" / land in Uncategorised): list what else the till recorded for them.
@@ -1791,7 +1830,7 @@ export default {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) return json({ error: 'bad date' }, 400);
       const hour = hourParam == null || hourParam === '' ? null : parseInt(hourParam, 10);
       try {
-        return json(await squareBreakdown(env, date, hour));
+        return json(await squareBreakdown(env, date, hour, url.searchParams.get('venue') || 'doughgirlz'));
       } catch (e) {
         const denied = e && (e.status === 401 || e.status === 403);
         return json({ error: denied ? 'Square wouldn\'t share item details. The Square access token needs "Orders (read)" and "Items (read)" permission.' : String(e && e.message || e) });
@@ -1801,7 +1840,7 @@ export default {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       const from = url.searchParams.get('from'), to = url.searchParams.get('to');
       if (!/^\d{4}-\d{2}-\d{2}$/.test(from || '') || !/^\d{4}-\d{2}-\d{2}$/.test(to || '')) return json({ error: 'bad range' }, 400);
-      try { return json(await squareCategoryDays(env, from, to, { left: 4 })); }
+      try { return json(await squareCategoryDays(env, from, to, { left: 4 }, url.searchParams.get('venue') || 'doughgirlz')); }
       catch (e) { return json({ days: [], pending: 0, error: String(e && e.message || e) }); }
     }
     // Two periods side by side (current vs previous), for the section-specific comparison chart.
@@ -1813,12 +1852,13 @@ export default {
       if (!from || !to || !pfrom || !pto) return json({ error: 'bad range' }, 400);
       try {
         if (venue === 'guncotton') {
-          const [cur, prev] = await Promise.all([bepozDailyBreakdown(env, from, to), bepozDailyBreakdown(env, pfrom, pto)]);
-          return json({ cur: { days: cur, pending: 0 }, prev: { days: prev, pending: 0 } });
+          const budget = { left: 10 };
+          const cur = await gcDaily(env, from, to, budget), prev = await gcDaily(env, pfrom, pto, budget);
+          return json({ cur, prev });
         }
         const budget = { left: 10 };
-        const cur = await squareDailySummary(env, from, to, budget);
-        const prev = await squareDailySummary(env, pfrom, pto, budget);
+        const cur = await squareDailySummary(env, from, to, budget, 'doughgirlz');
+        const prev = await squareDailySummary(env, pfrom, pto, budget, 'doughgirlz');
         return json({ cur, prev });
       } catch (e) { return json({ error: String(e && e.message || e) }, 200); }
     }
@@ -1960,7 +2000,8 @@ export default {
         // No reports on this weekday in the last 4 weeks: likely a day we don't trade, so stay quiet.
         withinTradingHours = false;
       }
-      const warning = withinTradingHours && (minutesSinceLast === null || minutesSinceLast > 90);
+      // Gun Cotton moved to Square on SQUARE_NEW_FROM, so Bepoz emails stopping is expected from then on.
+      const warning = toBrisbane(new Date()).dateStr < SQUARE_NEW_FROM && withinTradingHours && (minutesSinceLast === null || minutesSinceLast > 90);
       const fmtHM = (m) => m == null ? null : String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
       return json({ lastReceivedAt, minutesSinceLast, withinTradingHours, usualFirstReport: fmtHM(first), usualLastReport: fmtHM(last), warning });
     }
