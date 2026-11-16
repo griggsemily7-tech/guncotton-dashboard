@@ -1688,6 +1688,36 @@ export default {
     }
     // Read-only check: for one day, the most-sold items with the size (variation) names and the modifier names the
     // till sent for each. Shows whether sizes arrive as variations or as modifiers. Item names and counts only.
+    // Read-only look at the NEW Square account (the one with both venues in it): its locations, when sales first
+    // appeared in each (so the changeover time is visible), sales per day, and its category names.
+    // Needs the new account's access token saved in Cloudflare as POS_API_TOKEN_2.
+    if (path === '/api/square2-check') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const tok = env.POS_API_TOKEN_2;
+      if (!tok) return json({ error: 'POS_API_TOKEN_2 is not saved in Cloudflare yet' });
+      const H = { Authorization: 'Bearer ' + tok, 'Square-Version': '2025-01-23', 'Content-Type': 'application/json' };
+      const get = async (p) => { const r = await fetch('https://connect.squareup.com' + p, { headers: H }); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error('Square ' + p.split('?')[0] + ' failed (' + r.status + '): ' + ((j.errors && j.errors[0] && (j.errors[0].detail || j.errors[0].code)) || '')); return j; };
+      const fmt = (iso) => { const d = new Date(new Date(iso).getTime() + 10 * 3600 * 1000); return d.toISOString().replace('T', ' ').slice(0, 16) + ' (Brisbane)'; };
+      try {
+        const locs = ((await get('/v2/locations')).locations || []).filter((l) => l.status === 'ACTIVE');
+        const today = toBrisbane(new Date()).dateStr, from = addDaysStr(today, -10);
+        const out = { locations: [] };
+        for (const l of locs) {
+          let cursor = null, pages = 0; const pays = [];
+          do {
+            const q = new URLSearchParams({ begin_time: from + 'T00:00:00+10:00', end_time: today + 'T23:59:59+10:00', location_id: l.id, sort_order: 'ASC' }); if (cursor) q.set('cursor', cursor);
+            const j = await get('/v2/payments?' + q.toString()); pays.push(...(j.payments || []).filter((p) => p.status === 'COMPLETED')); cursor = j.cursor; pages++;
+          } while (cursor && pages < 8);
+          const perDay = {}; pays.forEach((p) => { const d = toBrisbane(new Date(p.created_at)).dateStr; perDay[d] = (perDay[d] || 0) + 1; });
+          out.locations.push({ name: l.name, id: l.id, countedAs: Object.keys(SQUARE_VENUE_LOCATIONS).filter((v) => SQUARE_VENUE_LOCATIONS[v].test(l.name)),
+            firstSaleInLast10Days: pays.length ? fmt(pays[0].created_at) : null, latestSale: pays.length ? fmt(pays[pays.length - 1].created_at) : null, paymentsPerDay: perDay });
+        }
+        const cats = []; let cur = null, n = 0;
+        do { const j = await get('/v2/catalog/list?types=CATEGORY' + (cur ? '&cursor=' + encodeURIComponent(cur) : '')); (j.objects || []).forEach((o) => cats.push((o.category_data && o.category_data.name) || '?')); cur = j.cursor; n++; } while (cur && n < 5);
+        out.categories = cats.sort();
+        return json(out);
+      } catch (e) { return json({ error: String(e && e.message || e) }); }
+    }
     if (path === '/api/square-locations-check') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       try {
