@@ -1026,7 +1026,7 @@ async function squareBreakdown(env, date, hour, venue) {
         [/^sides?$/i, 'Sides'],
         [/^syrups?\s*\/\s*powders?$/i, 'Retail'],   // syrups and powders are sold as retail
         [/^wholesale\s+coffee$/i, 'Wholesale Coffee'],
-        [/^hot\s+coffee$/i, 'Hot Coffee'],
+        [/^(hot\s+)?coffee$/i, 'Hot Coffee'],   // "Coffee" and "Hot Coffee" are the same thing
         [/^retail\s+coffee$/i, 'Retail Coffee'],
         [/^keep\s*cups?$/i, 'Keep cups']
       ];
@@ -1198,7 +1198,7 @@ async function squareCategoryDays(env, from, to, budget, venue) {
   budget = budget || { left: 4 };
   const today = toBrisbane(new Date()).dateStr;
   const dates = listDates(from, to).filter((d) => d <= today && (venue !== 'guncotton' || d >= SQUARE_NEW_FROM));
-  const cachedVals = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqgoal18:' + venue + ':' + d) : null)));
+  const cachedVals = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqgoal19:' + venue + ':' + d) : null)));
   const days = [];
   let pending = 0;
   for (let i = 0; i < dates.length; i++) {
@@ -1212,7 +1212,7 @@ async function squareCategoryDays(env, from, to, budget, venue) {
       // item count, where a box is 1.
       b.categories.forEach((c) => { const units = (c.flavours || []).reduce((t, f) => t + (f.qty || 0), 0); rec.cats[c.name] = { qty: c.qty, gross: c.gross, units: units || undefined }; });
       if (b.surchargeGross > 0.005) rec.cats['Surcharges'] = { qty: 0, gross: b.surchargeGross };
-      if (d < today) { await env.TOKENS.put('sqgoal18:' + venue + ':' + d, JSON.stringify(rec)); budget.left--; }
+      if (d < today) { await env.TOKENS.put('sqgoal19:' + venue + ':' + d, JSON.stringify(rec)); budget.left--; }
     }
     days.push({ date: d, cats: rec.cats });
   }
@@ -1743,7 +1743,7 @@ export default {
         const today = toBrisbane(new Date()).dateStr;
         const dates = listDates(from, to).filter((d) => d <= today).slice(0, 31);
         const bdVenue = url.searchParams.get('venue') || 'doughgirlz';
-        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd34:' + bdVenue + ':' + d) : null)));
+        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd35:' + bdVenue + ':' + d) : null)));
         let budget = 4, pending = 0, orders = 0, totalQty = 0, totalNet = 0, surchargeGross = 0;
         const cats = {}, extras = {}, discs = {};
         for (let i = 0; i < dates.length; i++) {
@@ -1752,7 +1752,7 @@ export default {
           if (!b) {
             if (d < today && budget <= 0) { pending++; continue; }
             b = await squareBreakdown(env, d, null, bdVenue);
-            if (d < today) { await env.TOKENS.put('sqbd34:' + bdVenue + ':' + d, JSON.stringify(b)); budget--; }
+            if (d < today) { await env.TOKENS.put('sqbd35:' + bdVenue + ':' + d, JSON.stringify(b)); budget--; }
           }
           orders += b.orders || 0; totalQty += b.totalQty || 0; totalNet += b.totalNet || 0; surchargeGross += b.surchargeGross || 0;
           (b.extras || []).forEach((x) => { extras[x.name] = (extras[x.name] || 0) + (x.gross || 0); });
