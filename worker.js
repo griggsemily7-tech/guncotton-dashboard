@@ -608,6 +608,10 @@ const SUPER_RATES = [
   ['2000-01-01', 0.095]
 ];
 const superRateOn = (dateStr) => (SUPER_RATES.find(([from]) => dateStr >= from) || SUPER_RATES[SUPER_RATES.length - 1])[1];
+// People paid a set hourly rate (dollars before super) that Roubler doesn't cost correctly. Matched by name (capitals and
+// extra spaces don't matter), so every Roubler profile with that name uses it.
+const PERSON_RATES = { 'emily griggs': 30.36 };
+const personRateOf = (r) => { const n = String((r.employee && r.employee.fullName) || '').toLowerCase().replace(/\s+/g, ' ').trim(); return PERSON_RATES[n] != null ? PERSON_RATES[n] : null; };
 // New-person trials are paid a flat rate and no super. A trial is anyone whose name or position in Roubler says "trial".
 const TRIAL_RATE = 30;   // dollars an hour
 const isTrialRow = (r) => /trial/i.test((r.employee && r.employee.fullName) || '') || /trial/i.test((r.position && r.position.name) || '');
@@ -705,7 +709,7 @@ async function roublerPayRunRates(env, token) {
 }
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw25:' + from + ':' + to, incToday ? 300 : 3600, async () => {
+  return cached(env, 'rbw26:' + from + ':' + to, incToday ? 300 : 3600, async () => {
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
@@ -774,7 +778,7 @@ async function roublerWages(env, from, to) {
     rows = rows.filter((r) => !notWorkedOn(r.employee && r.employee.fullName, toBrisbane(new Date(r.startTime)).dateStr));
     rows = applyTimeOverrides(rows);
     const rate = {}; let allCost = 0, allHrs = 0;
-    rows.forEach((r) => { if (r.cost != null && r.hours > 0 && !isTrialRow(r)) { const id = r.employee && r.employee.id; const x = rate[id] || (rate[id] = { c: 0, h: 0 }); x.c += r.cost / 100; x.h += r.hours; allCost += r.cost / 100; allHrs += r.hours; } });
+    rows.forEach((r) => { if (r.cost != null && r.hours > 0 && !isTrialRow(r) && personRateOf(r) == null) { const id = r.employee && r.employee.id; const x = rate[id] || (rate[id] = { c: 0, h: 0 }); x.c += r.cost / 100; x.h += r.hours; allCost += r.cost / 100; allHrs += r.hours; } });
     const avg = allHrs ? allCost / allHrs : 0;
     // Average hourly cost per award pay level (e.g. "Level 2 - Casual"), from staff on that level whose
     // shifts Roubler has costed. Used before the overall average, as it's much closer to the person's real rate.
@@ -810,7 +814,9 @@ async function roublerWages(env, from, to) {
       const f = r.kind === 'shift' ? r.frac : 1;
       let cost = r.cost != null ? r.cost / 100 : null, est = false;
       const trial = isTrialRow(r);
+      const setRate = personRateOf(r);
       if (trial) { cost = (r.hours || 0) * TRIAL_RATE; est = false; }   // flat trial rate, whatever Roubler says
+      else if (setRate != null) { cost = (r.hours || 0) * setRate; est = false; }   // a set hourly rate for this person (PERSON_RATES)
       else if (cost == null) {
         // First choice: the same person's rostered cost for that day (Roubler's own figure, so no star).
         const rr = r.kind === 'timesheet' && rosterRate[id + '|' + toBrisbane(new Date(r.startTime)).dateStr];
