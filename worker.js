@@ -635,6 +635,15 @@ const addDaysStr = (d, n) => { const x = new Date(d + 'T00:00:00Z'); x.setUTCDat
 const VENUE_OVERRIDES = [
   { name: 'maria maldonado daza', from: '2026-11-13', to: '2026-11-13', venue: 'guncotton', section: 'kitchen' }
 ];
+// Days someone was rostered (or has a timesheet) but did NOT work, so they shouldn't count in the wages. The cleanest fix is
+// to remove the shift or timesheet in Roubler; this is for when that isn't done.
+const NOT_WORKED = [
+  { name: 'jacinta borges', from: '2026-11-10', to: '2026-11-10' }
+];
+const notWorkedOn = (fullName, day) => {
+  const n = String(fullName || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  return NOT_WORKED.some((o) => o.name === n && day >= o.from && day <= o.to);
+};
 // Days when one shift was split between the two venues. Between those times (Brisbane time) they count at `venue`;
 // the rest of the shift counts at `otherwise`. Hours and cost are split by time.
 const TIME_OVERRIDES = [
@@ -695,7 +704,7 @@ async function roublerPayRunRates(env, token) {
 }
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw23:' + from + ':' + to, incToday ? 300 : 3600, async () => {
+  return cached(env, 'rbw24:' + from + ':' + to, incToday ? 300 : 3600, async () => {
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
@@ -761,6 +770,7 @@ async function roublerWages(env, from, to) {
       if (day < from || day > pastEnd || hadTimesheet.has(x.employee.id + '|' + day)) return;
       rows.push({ ...x, kind: 'rosterOnly' });
     });
+    rows = rows.filter((r) => !notWorkedOn(r.employee && r.employee.fullName, toBrisbane(new Date(r.startTime)).dateStr));
     rows = applyTimeOverrides(rows);
     const rate = {}; let allCost = 0, allHrs = 0;
     rows.forEach((r) => { if (r.cost != null && r.hours > 0 && !isTrialRow(r)) { const id = r.employee && r.employee.id; const x = rate[id] || (rate[id] = { c: 0, h: 0 }); x.c += r.cost / 100; x.h += r.hours; allCost += r.cost / 100; allHrs += r.hours; } });
