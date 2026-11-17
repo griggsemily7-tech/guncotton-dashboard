@@ -608,6 +608,9 @@ const SUPER_RATES = [
   ['2000-01-01', 0.095]
 ];
 const superRateOn = (dateStr) => (SUPER_RATES.find(([from]) => dateStr >= from) || SUPER_RATES[SUPER_RATES.length - 1])[1];
+// New-person trials are paid a flat rate and no super. A trial is anyone whose name or position in Roubler says "trial".
+const TRIAL_RATE = 30;   // dollars an hour
+const isTrialRow = (r) => /trial/i.test((r.employee && r.employee.fullName) || '') || /trial/i.test((r.position && r.position.name) || '');
 // Salaried staff are paid on their annual leave (4 weeks) and sick days (10) too, but don't work those
 // days, so each worked day really costs 260 ÷ 230 of the day's salary.
 const SALARY_LEAVE_FACTOR = 260 / 230;
@@ -692,7 +695,7 @@ async function roublerPayRunRates(env, token) {
 }
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw22:' + from + ':' + to, incToday ? 300 : 3600, async () => {
+  return cached(env, 'rbw23:' + from + ':' + to, incToday ? 300 : 3600, async () => {
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
@@ -760,7 +763,7 @@ async function roublerWages(env, from, to) {
     });
     rows = applyTimeOverrides(rows);
     const rate = {}; let allCost = 0, allHrs = 0;
-    rows.forEach((r) => { if (r.cost != null && r.hours > 0) { const id = r.employee && r.employee.id; const x = rate[id] || (rate[id] = { c: 0, h: 0 }); x.c += r.cost / 100; x.h += r.hours; allCost += r.cost / 100; allHrs += r.hours; } });
+    rows.forEach((r) => { if (r.cost != null && r.hours > 0 && !isTrialRow(r)) { const id = r.employee && r.employee.id; const x = rate[id] || (rate[id] = { c: 0, h: 0 }); x.c += r.cost / 100; x.h += r.hours; allCost += r.cost / 100; allHrs += r.hours; } });
     const avg = allHrs ? allCost / allHrs : 0;
     // Average hourly cost per award pay level (e.g. "Level 2 - Casual"), from staff on that level whose
     // shifts Roubler has costed. Used before the overall average, as it's much closer to the person's real rate.
@@ -795,7 +798,9 @@ async function roublerWages(env, from, to) {
       }
       const f = r.kind === 'shift' ? r.frac : 1;
       let cost = r.cost != null ? r.cost / 100 : null, est = false;
-      if (cost == null) {
+      const trial = isTrialRow(r);
+      if (trial) { cost = (r.hours || 0) * TRIAL_RATE; est = false; }   // flat trial rate, whatever Roubler says
+      else if (cost == null) {
         // First choice: the same person's rostered cost for that day (Roubler's own figure, so no star).
         const rr = r.kind === 'timesheet' && rosterRate[id + '|' + toBrisbane(new Date(r.startTime)).dateStr];
         if (rr && rr.h) cost = (r.hours || 0) * (rr.c / rr.h);
@@ -803,12 +808,12 @@ async function roublerWages(env, from, to) {
       }
       const day = toBrisbane(new Date(r.startTime)).dateStr, wk = weekOf(day);
       const key = id + '|' + wk; weekHrs[key] = (weekHrs[key] || 0) + (r.hours || 0);
-      counted.push({ r, id, cls, f, cost, est, day, key });
+      counted.push({ r, id, cls, f, cost, est, day, key, trial });
     });
     // Second pass: add super (and, for salaried staff, their paid leave) and total it up.
-    counted.forEach(({ r, id, cls, f, cost, est, day, key }) => {
-      const gotSuper = !under18(id, day) || weekHrs[key] > 30;
-      const salaried = !!(info[id] && info[id].salaried);
+    counted.forEach(({ r, id, cls, f, cost, est, day, key, trial }) => {
+      const gotSuper = !trial && (!under18(id, day) || weekHrs[key] > 30);   // no super on trials
+      const salaried = !trial && !!(info[id] && info[id].salaried);
       // Pay itself, then super on top, then (salaried only) the share of annual leave and sick pay.
       const base = cost * f;
       const sup = gotSuper ? base * superRateOn(day) : 0;
@@ -824,13 +829,14 @@ async function roublerWages(env, from, to) {
       pr.hours += hrs; pr.cost += total; pr.base += base; pr.sup += sup; pr.leave += leave;
       if (r.kind === 'rosterOnly') pr.noClock = (pr.noClock || 0) + 1;
       if (r._nc) pr.notClockedIn = true;
+      if (trial) pr.trial = true;
       if (r.kind === 'timesheet' && (r.hours || 0) > 12) pr.longShift = (pr.longShift || 0) + 1;   // probably forgot to clock out
       if (est) pr.estimated = true; if (cls.section) pr.sections[cls.section] = true;
     });
     Object.keys(notClocked).forEach((v) => { out[v].notClockedIn = Object.entries(notClocked[v]).map(([name, hours]) => ({ name, hours })); });
     Object.keys(people).forEach((v) => {
       out[v].people = Object.values(people[v]).map((p) => ({ name: p.name, hours: p.hours, cost: p.cost, perHour: p.hours ? p.cost / p.hours : 0,
-        notClockedIn: !!p.notClockedIn, noClock: p.noClock || 0, longShift: p.longShift || 0, salaried: p.salaried, basePerHour: p.hours ? p.base / p.hours : 0, superPerHour: p.hours ? p.sup / p.hours : 0, leavePerHour: p.hours ? p.leave / p.hours : 0,
+        trial: !!p.trial, notClockedIn: !!p.notClockedIn, noClock: p.noClock || 0, longShift: p.longShift || 0, salaried: p.salaried, basePerHour: p.hours ? p.base / p.hours : 0, superPerHour: p.hours ? p.sup / p.hours : 0, leavePerHour: p.hours ? p.leave / p.hours : 0,
         estimated: p.estimated, section: Object.keys(p.sections).length === 1 ? Object.keys(p.sections)[0] : (Object.keys(p.sections).length ? 'both' : null) }))
         .sort((a, b) => b.cost - a.cost);
     });
@@ -867,7 +873,7 @@ const squareCatIdOf = (item) => {
 // Maps item-variation ids to { category, item }, remembering answers in KV so the catalog is only asked once per product.
 async function squareCategoriesFor(env, variationIds, acct) {
   const out = {}, missing = [];
-  const hits = await Promise.all(variationIds.map((id) => env.TOKENS.get('sqcat:' + id)));
+  const hits = await Promise.all(variationIds.map((id) => env.TOKENS.get('sqcat2:' + id)));
   variationIds.forEach((id, i) => { if (hits[i]) out[id] = JSON.parse(hits[i]); else missing.push(id); });
   if (!missing.length) return out;
   const data = await squareApi(env, '/v2/catalog/batch-retrieve', 'POST', { object_ids: missing, include_related_objects: true }, acct);
@@ -885,7 +891,7 @@ async function squareCategoriesFor(env, variationIds, acct) {
     const item = itemOf(vid), cid = squareCatIdOf(item), cat = cid && byId[cid];
     const rec = { category: cat && cat.category_data ? cat.category_data.name : 'Uncategorised', item: item && item.item_data ? item.item_data.name : null };
     out[vid] = rec;
-    return env.TOKENS.put('sqcat:' + vid, JSON.stringify(rec), { expirationTtl: 86400 * 7 });
+    return env.TOKENS.put('sqcat2:' + vid, JSON.stringify(rec), { expirationTtl: 6 * 3600 });
   }));
   return out;
 }
@@ -913,7 +919,7 @@ async function squareBreakdown(env, date, hour, venue) {
   orders.forEach((o) => (o.line_items || []).forEach((li) => { li._ticket = o.ticket_name || null; lines.push(li); }));
   const variationIds = [...new Set(lines.map((li) => li.catalog_object_id).filter(Boolean))];
   const catMap = variationIds.length ? await squareCategoriesFor(env, variationIds, acct) : {};
-  const cats = {};
+  const cats = {}, canonCats = {};
   let totalQty = 0, totalCents = 0, surchargeCents = 0;
   const amt = (m) => (m && m.amount) || 0;
   // Flavour counts for cookies and donuts: a box (e.g. "Cookie 4 Box") is broken into the flavours picked as
@@ -968,6 +974,9 @@ async function squareBreakdown(env, date, hour, venue) {
       if (said) itemName = said;
     }
     let catName = meta ? meta.category : 'Uncategorised';
+    // The two venues share one Square catalogue, so a category used by one of them can be named with a venue prefix
+    // ("DG - Cold drinks", "GC - Kids"). The prefix is only there to tell them apart in Square, so it's dropped here.
+    catName = String(catName).replace(/^\s*(dg|dough\s*girlz?|gc|gun\s*cotton)\s*[-–—:_]\s*/i, '').trim() || catName;
     // Items Square files under the wrong category for how we track them. Add a line here to move another item.
     const CATEGORY_OVERRIDES = [
       [/\bpods?\b/i, 'Retail'],                    // coffee pods → Retail, not Retail Coffee (the bags)
@@ -978,6 +987,33 @@ async function squareBreakdown(env, date, hour, venue) {
     ];
     const ov = CATEGORY_OVERRIDES.find(([re]) => re.test(itemName));
     if (ov) catName = ov[1];
+    else {
+      // Square's catalogue has the same category spelled several ways (and the cafe and bakehouse set theirs up
+      // separately). These are tidied into one name each so a category isn't split across rows.
+      const CATEGORY_MERGE = [
+        [/^bottled\s+(cold\s+)?drinks?$/i, 'Bottled drinks'],
+        [/^cold\s+drinks?$/i, 'Cold drinks'],
+        [/^juices?$/i, 'Juices'],
+        [/^milks?$/i, 'Milks'],
+        [/^smoothies?$/i, 'Smoothies'],
+        [/^(dog|doggy)\s+treats?$/i, 'Dog Treats'],
+        [/^(alcohol\s+)?spirits?$/i, 'Spirits'],
+        [/^kids?$/i, 'Kids'],
+        [/^teas?$/i, 'Teas'],
+        [/^sides?$/i, 'Sides'],
+        [/^syrups?\s*\/\s*powders?$/i, 'Syrups/Powders'],
+        [/^wholesale\s+coffee$/i, 'Wholesale Coffee'],
+        [/^hot\s+coffee$/i, 'Hot Coffee'],
+        [/^retail\s+coffee$/i, 'Retail Coffee'],
+        [/^keep\s*cups?$/i, 'Keep cups']
+      ];
+      const mg = CATEGORY_MERGE.find(([re]) => re.test(String(catName).trim()));
+      if (mg) catName = mg[1];
+      else {   // anything else: names that differ only by capitals or spacing are one category (first spelling seen wins)
+        const key = String(catName).toLowerCase().replace(/\s+/g, ' ').trim();
+        catName = canonCats[key] || (canonCats[key] = String(catName).replace(/\s+/g, ' ').trim());
+      }
+    }
     const c = cats[catName] || (cats[catName] = { name: catName, qty: 0, net: 0, gross: 0, items: {}, flavours: {}, boxes: {}, unclear: [] });
     c.qty += qty; c.net += cents / 100; c.gross += itemCents / 100;
     if (flavourKind(catName) || flavourKind(itemName)) {
@@ -1136,7 +1172,7 @@ async function squareCategoryDays(env, from, to, budget, venue) {
   budget = budget || { left: 4 };
   const today = toBrisbane(new Date()).dateStr;
   const dates = listDates(from, to).filter((d) => d <= today && (venue !== 'guncotton' || d >= SQUARE_NEW_FROM));
-  const cachedVals = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqgoal14:' + venue + ':' + d) : null)));
+  const cachedVals = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqgoal16:' + venue + ':' + d) : null)));
   const days = [];
   let pending = 0;
   for (let i = 0; i < dates.length; i++) {
@@ -1150,7 +1186,7 @@ async function squareCategoryDays(env, from, to, budget, venue) {
       // item count, where a box is 1.
       b.categories.forEach((c) => { const units = (c.flavours || []).reduce((t, f) => t + (f.qty || 0), 0); rec.cats[c.name] = { qty: c.qty, gross: c.gross, units: units || undefined }; });
       if (b.surchargeGross > 0.005) rec.cats['Surcharges'] = { qty: 0, gross: b.surchargeGross };
-      if (d < today) { await env.TOKENS.put('sqgoal14:' + venue + ':' + d, JSON.stringify(rec)); budget.left--; }
+      if (d < today) { await env.TOKENS.put('sqgoal16:' + venue + ':' + d, JSON.stringify(rec)); budget.left--; }
     }
     days.push({ date: d, cats: rec.cats });
   }
@@ -1681,7 +1717,7 @@ export default {
         const today = toBrisbane(new Date()).dateStr;
         const dates = listDates(from, to).filter((d) => d <= today).slice(0, 31);
         const bdVenue = url.searchParams.get('venue') || 'doughgirlz';
-        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd30:' + bdVenue + ':' + d) : null)));
+        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd32:' + bdVenue + ':' + d) : null)));
         let budget = 4, pending = 0, orders = 0, totalQty = 0, totalNet = 0, surchargeGross = 0;
         const cats = {}, extras = {}, discs = {};
         for (let i = 0; i < dates.length; i++) {
@@ -1690,7 +1726,7 @@ export default {
           if (!b) {
             if (d < today && budget <= 0) { pending++; continue; }
             b = await squareBreakdown(env, d, null, bdVenue);
-            if (d < today) { await env.TOKENS.put('sqbd30:' + bdVenue + ':' + d, JSON.stringify(b)); budget--; }
+            if (d < today) { await env.TOKENS.put('sqbd32:' + bdVenue + ':' + d, JSON.stringify(b)); budget--; }
           }
           orders += b.orders || 0; totalQty += b.totalQty || 0; totalNet += b.totalNet || 0; surchargeGross += b.surchargeGross || 0;
           (b.extras || []).forEach((x) => { extras[x.name] = (extras[x.name] || 0) + (x.gross || 0); });
