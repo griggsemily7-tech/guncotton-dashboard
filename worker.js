@@ -643,7 +643,7 @@ const VENUE_OVERRIDES = [
 // to remove the shift or timesheet in Roubler; this is for when that isn't done.
 const NOT_WORKED = [
   { name: 'jacinta borges', from: '2026-11-10', to: '2026-11-10' },
-  { name: 'jamie morris', from: '2026-11-14', to: '2026-11-14' }
+  { name: 'jamie morris', from: '2026-11-14', to: '2026-11-15' }
 ];
 const notWorkedOn = (fullName, day) => {
   const n = String(fullName || '').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -709,7 +709,7 @@ async function roublerPayRunRates(env, token) {
 }
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw26:' + from + ':' + to, incToday ? 300 : 3600, async () => {
+  return cached(env, 'rbw27:' + from + ':' + to, incToday ? 300 : 3600, async () => {
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
