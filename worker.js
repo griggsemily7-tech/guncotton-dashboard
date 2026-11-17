@@ -638,7 +638,8 @@ const VENUE_OVERRIDES = [
 // Days someone was rostered (or has a timesheet) but did NOT work, so they shouldn't count in the wages. The cleanest fix is
 // to remove the shift or timesheet in Roubler; this is for when that isn't done.
 const NOT_WORKED = [
-  { name: 'jacinta borges', from: '2026-11-10', to: '2026-11-10' }
+  { name: 'jacinta borges', from: '2026-11-10', to: '2026-11-10' },
+  { name: 'jamie morris', from: '2026-11-14', to: '2026-11-14' }
 ];
 const notWorkedOn = (fullName, day) => {
   const n = String(fullName || '').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -704,7 +705,7 @@ async function roublerPayRunRates(env, token) {
 }
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw24:' + from + ':' + to, incToday ? 300 : 3600, async () => {
+  return cached(env, 'rbw25:' + from + ':' + to, incToday ? 300 : 3600, async () => {
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
