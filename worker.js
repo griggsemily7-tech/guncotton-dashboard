@@ -610,8 +610,14 @@ const SUPER_RATES = [
 const superRateOn = (dateStr) => (SUPER_RATES.find(([from]) => dateStr >= from) || SUPER_RATES[SUPER_RATES.length - 1])[1];
 // People paid a set hourly rate (dollars before super) that Roubler doesn't cost correctly. Matched by name (capitals and
 // extra spaces don't matter), so every Roubler profile with that name uses it.
-const PERSON_RATES = { 'emily griggs': 30.36 };
-const personRateOf = (r) => { const n = String((r.employee && r.employee.fullName) || '').toLowerCase().replace(/\s+/g, ' ').trim(); return PERSON_RATES[n] != null ? PERSON_RATES[n] : null; };
+// leave: true = also add the holiday & sick pay share (the same as for salaried staff). Super is added for everyone 18+.
+const PERSON_RATES = {
+  'emily griggs': { rate: 30.36 },
+  'sunil regmi': { rate: 36.17, leave: true },
+  'maria maldonado daza': { rate: 35.78, leave: true }
+};
+const personOf = (r) => PERSON_RATES[String((r.employee && r.employee.fullName) || '').toLowerCase().replace(/\s+/g, ' ').trim()] || null;
+const personRateOf = (r) => { const p = personOf(r); return p ? p.rate : null; };
 // New-person trials are paid a flat rate and no super. A trial is anyone whose name or position in Roubler says "trial".
 const TRIAL_RATE = 30;   // dollars an hour
 const isTrialRow = (r) => /trial/i.test((r.employee && r.employee.fullName) || '') || /trial/i.test((r.position && r.position.name) || '');
@@ -709,7 +715,7 @@ async function roublerPayRunRates(env, token) {
 }
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw28:' + from + ':' + to, incToday ? 300 : 3600, async () => {
+  return cached(env, 'rbw29:' + from + ':' + to, incToday ? 300 : 3600, async () => {
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
@@ -825,12 +831,12 @@ async function roublerWages(env, from, to) {
       }
       const day = toBrisbane(new Date(r.startTime)).dateStr, wk = weekOf(day);
       const key = id + '|' + wk; weekHrs[key] = (weekHrs[key] || 0) + (r.hours || 0);
-      counted.push({ r, id, cls, f, cost, est, day, key, trial });
+      counted.push({ r, id, cls, f, cost, est, day, key, trial, leaveForced: !!(personOf(r) && personOf(r).leave) });
     });
     // Second pass: add super (and, for salaried staff, their paid leave) and total it up.
-    counted.forEach(({ r, id, cls, f, cost, est, day, key, trial }) => {
+    counted.forEach(({ r, id, cls, f, cost, est, day, key, trial, leaveForced }) => {
       const gotSuper = !trial && (!under18(id, day) || weekHrs[key] > 30);   // no super on trials
-      const salaried = !trial && !!(info[id] && info[id].salaried);
+      const salaried = !trial && (leaveForced || !!(info[id] && info[id].salaried));
       // Pay itself, then super on top, then (salaried only) the share of annual leave and sick pay.
       const base = cost * f;
       const sup = gotSuper ? base * superRateOn(day) : 0;
