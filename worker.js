@@ -1140,7 +1140,7 @@ async function squareBreakdown(env, date, hour, venue) {
     const vn = SIZE_RANK[vnLow] ? vnLow.charAt(0).toUpperCase() + vnLow.slice(1) : vnClean;
     const vKey = Object.keys(it.sizes).find((k) => k.toLowerCase() === vn.toLowerCase()) || vn;   // same name in different capitals = one line
     const z = it.sizes[vKey] || (it.sizes[vKey] = { qty: 0, gross: 0 }); z.qty += qty; z.gross += itemCents / 100;
-    if (/misc/i.test(itemName)) {   // "Misc toasties" etc.: keep what was typed or picked to say which one it really was
+    if (/misc|shake/i.test(itemName)) {   // "Misc toasties" and shakes: keep what was typed or picked (flavours, add-ons, notes) to say which one it was
       const det = it.details || (it.details = {});
       const bump = (kind, name) => { if (!name) return; const k = kind + '|' + name; const y = det[k] || (det[k] = { kind, name, qty: 0 }); y.qty += qty; };
       (li.modifiers || []).forEach((m) => bump('modifier', String(m.name || '').trim()));
@@ -1755,7 +1755,7 @@ export default {
         const today = toBrisbane(new Date()).dateStr;
         const dates = listDates(from, to).filter((d) => d <= today).slice(0, 31);
         const bdVenue = url.searchParams.get('venue') || 'doughgirlz';
-        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd37:' + bdVenue + ':' + d) : null)));
+        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd38:' + bdVenue + ':' + d) : null)));
         let budget = 4, pending = 0, orders = 0, totalQty = 0, totalNet = 0, surchargeGross = 0;
         const cats = {}, extras = {}, discs = {};
         for (let i = 0; i < dates.length; i++) {
@@ -1764,7 +1764,7 @@ export default {
           if (!b) {
             if (d < today && budget <= 0) { pending++; continue; }
             b = await squareBreakdown(env, d, null, bdVenue);
-            if (d < today) { await env.TOKENS.put('sqbd37:' + bdVenue + ':' + d, JSON.stringify(b)); budget--; }
+            if (d < today) { await env.TOKENS.put('sqbd38:' + bdVenue + ':' + d, JSON.stringify(b)); budget--; }
           }
           orders += b.orders || 0; totalQty += b.totalQty || 0; totalNet += b.totalNet || 0; surchargeGross += b.surchargeGross || 0;
           (b.extras || []).forEach((x) => { extras[x.name] = (extras[x.name] || 0) + (x.gross || 0); });
