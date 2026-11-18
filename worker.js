@@ -918,6 +918,25 @@ async function squareCategoriesFor(env, variationIds, acct) {
   }));
   return out;
 }
+// The day's orders. The old account closes every order when it's paid ("COMPLETED"), so those are read by closing time.
+// The new (restaurant) account leaves many paid orders "OPEN" and never closes them, so there every order created in
+// the window is read, and an open one counts only if it has been paid (has a payment on it).
+async function squareDayOrders(env, locationIds, startIso, endIso, acct) {
+  const useCreated = acct === 'new';
+  const filter = useCreated
+    ? { state_filter: { states: ['COMPLETED', 'OPEN'] }, date_time_filter: { created_at: { start_at: startIso, end_at: endIso } } }
+    : { state_filter: { states: ['COMPLETED'] }, date_time_filter: { closed_at: { start_at: startIso, end_at: endIso } } };
+  const orders = [];
+  let cursor = null, pages = 0;
+  do {
+    const body = { location_ids: locationIds, limit: 500, query: { filter, sort: { sort_field: useCreated ? 'CREATED_AT' : 'CLOSED_AT', sort_order: 'ASC' } } };
+    if (cursor) body.cursor = cursor;
+    const data = await squareApi(env, '/v2/orders/search', 'POST', body, acct);
+    orders.push(...(data.orders || []));
+    cursor = data.cursor; pages++;
+  } while (cursor && pages < 10);
+  return useCreated ? orders.filter((o) => o.state === 'COMPLETED' || (o.tenders && o.tenders.length)) : orders;
+}
 // What sold in a day (or one hour of it), grouped by Square category — numbers are Square's own net item figures (after discounts, before tax).
 async function squareBreakdown(env, date, hour, venue) {
   venue = venue || 'doughgirlz';
@@ -926,18 +945,10 @@ async function squareBreakdown(env, date, hour, venue) {
   const startIso = date + 'T' + (hour == null ? '00:00:00' : pad(hour) + ':00:00') + '+10:00';
   const endIso = date + 'T' + (hour == null ? '23:59:59' : pad(hour) + ':59:59') + '+10:00';
   const locationIds = await squareLocationIds(env, venue, acct);
-  const orders = [];
-  let cursor = null, pages = 0;
   // Gun Cotton was on Bepoz (no item detail) before the switch; and the new account only has the venues' own locations.
   const noData = (venue === 'guncotton' && date < SQUARE_NEW_FROM) || (acct === 'new' && !locationIds.length) || !sqToken(env, acct);
   if (noData) return { date, hour: hour == null ? null : hour, orders: 0, totalQty: 0, totalNet: 0, surchargeGross: 0, extras: [], discounts: [], categories: [], noItemData: true };
-  do {
-    const body = { location_ids: locationIds, limit: 500, query: { filter: { state_filter: { states: ['COMPLETED'] }, date_time_filter: { closed_at: { start_at: startIso, end_at: endIso } } }, sort: { sort_field: 'CLOSED_AT', sort_order: 'ASC' } } };
-    if (cursor) body.cursor = cursor;
-    const data = await squareApi(env, '/v2/orders/search', 'POST', body, acct);
-    orders.push(...(data.orders || []));
-    cursor = data.cursor; pages++;
-  } while (cursor && pages < 10);
+  const orders = await squareDayOrders(env, locationIds, startIso, endIso, acct);
   const lines = [];
   orders.forEach((o) => (o.line_items || []).forEach((li) => { li._ticket = o.ticket_name || null; lines.push(li); }));
   const variationIds = [...new Set(lines.map((li) => li.catalog_object_id).filter(Boolean))];
@@ -1199,7 +1210,7 @@ async function squareCategoryDays(env, from, to, budget, venue) {
   budget = budget || { left: 4 };
   const today = toBrisbane(new Date()).dateStr;
   const dates = listDates(from, to).filter((d) => d <= today && (venue !== 'guncotton' || d >= SQUARE_NEW_FROM));
-  const cachedVals = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqgoal20:' + venue + ':' + d) : null)));
+  const cachedVals = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqgoal21:' + venue + ':' + d) : null)));
   const days = [];
   let pending = 0;
   for (let i = 0; i < dates.length; i++) {
@@ -1213,7 +1224,7 @@ async function squareCategoryDays(env, from, to, budget, venue) {
       // item count, where a box is 1.
       b.categories.forEach((c) => { const units = (c.flavours || []).reduce((t, f) => t + (f.qty || 0), 0); rec.cats[c.name] = { qty: c.qty, gross: c.gross, units: units || undefined }; });
       if (b.surchargeGross > 0.005) rec.cats['Surcharges'] = { qty: 0, gross: b.surchargeGross };
-      if (d < today) { await env.TOKENS.put('sqgoal20:' + venue + ':' + d, JSON.stringify(rec)); budget.left--; }
+      if (d < today) { await env.TOKENS.put('sqgoal21:' + venue + ':' + d, JSON.stringify(rec)); budget.left--; }
     }
     days.push({ date: d, cats: rec.cats });
   }
@@ -1744,7 +1755,7 @@ export default {
         const today = toBrisbane(new Date()).dateStr;
         const dates = listDates(from, to).filter((d) => d <= today).slice(0, 31);
         const bdVenue = url.searchParams.get('venue') || 'doughgirlz';
-        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd36:' + bdVenue + ':' + d) : null)));
+        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd37:' + bdVenue + ':' + d) : null)));
         let budget = 4, pending = 0, orders = 0, totalQty = 0, totalNet = 0, surchargeGross = 0;
         const cats = {}, extras = {}, discs = {};
         for (let i = 0; i < dates.length; i++) {
@@ -1753,7 +1764,7 @@ export default {
           if (!b) {
             if (d < today && budget <= 0) { pending++; continue; }
             b = await squareBreakdown(env, d, null, bdVenue);
-            if (d < today) { await env.TOKENS.put('sqbd36:' + bdVenue + ':' + d, JSON.stringify(b)); budget--; }
+            if (d < today) { await env.TOKENS.put('sqbd37:' + bdVenue + ':' + d, JSON.stringify(b)); budget--; }
           }
           orders += b.orders || 0; totalQty += b.totalQty || 0; totalNet += b.totalNet || 0; surchargeGross += b.surchargeGross || 0;
           (b.extras || []).forEach((x) => { extras[x.name] = (extras[x.name] || 0) + (x.gross || 0); });
@@ -1871,7 +1882,7 @@ export default {
         const perDay = []; let cid = null, pid = null;
         for (const d of days) {
           const dnAcct = sqAcctFor(d), dnLocs = await squareLocationIds(env, dnVenue, dnAcct);
-          const data = await squareApi(env, '/v2/orders/search', 'POST', { location_ids: dnLocs, limit: 500, query: { filter: { state_filter: { states: ['COMPLETED'] }, date_time_filter: { closed_at: { start_at: d + 'T00:00:00+10:00', end_at: d + 'T23:59:59+10:00' } } } } }, dnAcct);
+          const data = { orders: await squareDayOrders(env, dnLocs, d + 'T00:00:00+10:00', d + 'T23:59:59+10:00', dnAcct) };
           const staff = (data.orders || []).filter((o) => (o.discounts || []).some((x) => /staff/i.test(x.name || '')));
           const n = (f) => staff.filter(f).length;
           const hasRecipient = (o) => (o.fulfillments || []).some((f) => f.pickup_details && f.pickup_details.recipient && f.pickup_details.recipient.display_name);
@@ -1897,7 +1908,8 @@ export default {
       try {
         const szVenue = url.searchParams.get('venue') || 'doughgirlz', szAcct = sqAcctFor(date);
         const locationIds = await squareLocationIds(env, szVenue, szAcct);
-        const data = await squareApi(env, '/v2/orders/search', 'POST', { location_ids: locationIds, limit: 500, query: { filter: { state_filter: { states: ['COMPLETED'] }, date_time_filter: { closed_at: { start_at: date + 'T00:00:00+10:00', end_at: date + 'T23:59:59+10:00' } } } } }, szAcct);
+        const dayOrders = await squareDayOrders(env, locationIds, date + 'T00:00:00+10:00', date + 'T23:59:59+10:00', szAcct);
+        const data = { orders: dayOrders };
         const items = {}, unnamed = [];
         (data.orders || []).forEach((o) => (o.line_items || []).forEach((li) => {
           // Lines with no name at all (these show as "Item" / land in Uncategorised): list what else the till recorded for them.
