@@ -480,7 +480,7 @@ async function squareFetchPayments(env, from, to, venue, acct) {
       if (!res.ok) { const e = new Error('square failed'); e.status = res.status; throw e; }
       const data = await res.json();
       for (const p of data.payments || []) {
-        if (p.status === 'COMPLETED') out.push({ createdAt: new Date(p.created_at), amountCents: (p.total_money && p.total_money.amount) || 0 });
+        if (p.status === 'COMPLETED') out.push({ createdAt: new Date(p.created_at), amountCents: (p.total_money && p.total_money.amount) || 0, orderId: p.order_id || null });
       }
       cursor = data.cursor; iterations++;
     } while (cursor && iterations < 20);
@@ -1791,6 +1791,34 @@ export default {
     // Read-only look at the NEW Square account (the one with both venues in it): its locations, when sales first
     // appeared in each (so the changeover time is visible), sales per day, and its category names.
     // Needs the new account's access token saved in Cloudflare as POS_API_TOKEN_2.
+    // Read-only: why would a day's item breakdown not add up to the day's sales? Compares the payments with the orders
+    // the breakdown reads, and shows what state any missing orders are in. Counts and totals only, no customer details.
+    if (path === '/api/sales-reconcile-check') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const date = url.searchParams.get('date'), venue = url.searchParams.get('venue') || 'guncotton';
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) return json({ error: 'add ?date=YYYY-MM-DD&venue=guncotton (or doughgirlz) to the address' }, 400);
+      try {
+        const acct = sqAcctFor(date), locs = await squareLocationIds(env, venue, acct);
+        const pays = await squareFetchPayments(env, date, date, venue, acct);
+        const out = { date, venue, account: acct, payments: { count: pays.length, totalInclGst: Math.round(pays.reduce((a, x) => a + x.amountCents, 0)) / 100, withOrderId: pays.filter((x) => x.orderId).length } };
+        const search = async (filter) => { const all = []; let cursor = null, pages = 0; do { const body = { location_ids: locs, limit: 500, query: { filter } }; if (cursor) body.cursor = cursor; const d = await squareApi(env, '/v2/orders/search', 'POST', body, acct); all.push(...(d.orders || [])); cursor = d.cursor; pages++; } while (cursor && pages < 10); return all; };
+        const sum = (arr) => Math.round(arr.reduce((a, o) => a + ((o.total_money && o.total_money.amount) || 0), 0)) / 100;
+        const closed = await search({ state_filter: { states: ['COMPLETED'] }, date_time_filter: { closed_at: { start_at: date + 'T00:00:00+10:00', end_at: date + 'T23:59:59+10:00' } } });
+        out.ordersTheBreakdownReads = { count: closed.length, totalInclGst: sum(closed), lineItems: closed.reduce((a, o) => a + (o.line_items || []).length, 0) };
+        const created = await search({ date_time_filter: { created_at: { start_at: date + 'T00:00:00+10:00', end_at: date + 'T23:59:59+10:00' } } });
+        const byState = {}; created.forEach((o) => { byState[o.state] = byState[o.state] || { count: 0, totalInclGst: 0 }; byState[o.state].count++; byState[o.state].totalInclGst += ((o.total_money && o.total_money.amount) || 0) / 100; });
+        Object.values(byState).forEach((v) => { v.totalInclGst = Math.round(v.totalInclGst * 100) / 100; });
+        out.allOrdersCreatedThatDay = { count: created.length, byState };
+        const have = new Set(closed.map((o) => o.id)), wanted = [...new Set(pays.map((x) => x.orderId).filter(Boolean))];
+        const missing = wanted.filter((id) => !have.has(id));
+        out.paymentsWhoseOrderIsNotInTheBreakdown = missing.length;
+        if (missing.length) {
+          const d = await squareApi(env, '/v2/orders/batch-retrieve', 'POST', { order_ids: missing.slice(0, 10) }, acct);
+          out.sampleOfThoseOrders = (d.orders || []).map((o) => ({ state: o.state, createdAt: o.created_at, closedAt: o.closed_at || null, lineItems: (o.line_items || []).length, totalInclGst: ((o.total_money && o.total_money.amount) || 0) / 100, hasTenders: !!(o.tenders && o.tenders.length), locationMatches: locs.includes(o.location_id) }));
+        }
+        return json(out);
+      } catch (e) { return json({ error: String(e && e.message || e) }); }
+    }
     if (path === '/api/square2-check') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       const tok = env.POS_API_TOKEN_2;
