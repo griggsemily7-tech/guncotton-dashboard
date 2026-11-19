@@ -1023,6 +1023,7 @@ async function squareBreakdown(env, date, hour, venue) {
     // Gun Cotton's own placements (the cafe files these differently from the bakehouse).
     const GC_OVERRIDES = [
       [/bunda?b[eu]rg|\bbundy\b|lemon\s*iced\s*tea/i, 'Cold drinks (screen)'],   // bottled drinks sit with the cold drinks
+      [/thick\s*shakes?/i, 'Cold drinks (screen)'],
       [/baby\s*c+h?ino|babyccino/i, 'Other Hot Drinks']
     ];
     const ov = (venue === 'guncotton' && GC_OVERRIDES.find(([re]) => re.test(itemName))) || CATEGORY_OVERRIDES.find(([re]) => re.test(itemName));
@@ -1760,7 +1761,7 @@ export default {
         const today = toBrisbane(new Date()).dateStr;
         const dates = listDates(from, to).filter((d) => d <= today).slice(0, 31);
         const bdVenue = url.searchParams.get('venue') || 'doughgirlz';
-        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd39:' + bdVenue + ':' + d) : null)));
+        const stored = await Promise.all(dates.map((d) => (d < today ? env.TOKENS.get('sqbd40:' + bdVenue + ':' + d) : null)));
         let budget = 4, pending = 0, orders = 0, totalQty = 0, totalNet = 0, surchargeGross = 0;
         const cats = {}, extras = {}, discs = {};
         for (let i = 0; i < dates.length; i++) {
@@ -1769,7 +1770,7 @@ export default {
           if (!b) {
             if (d < today && budget <= 0) { pending++; continue; }
             b = await squareBreakdown(env, d, null, bdVenue);
-            if (d < today) { await env.TOKENS.put('sqbd39:' + bdVenue + ':' + d, JSON.stringify(b)); budget--; }
+            if (d < today) { await env.TOKENS.put('sqbd40:' + bdVenue + ':' + d, JSON.stringify(b)); budget--; }
           }
           orders += b.orders || 0; totalQty += b.totalQty || 0; totalNet += b.totalNet || 0; surchargeGross += b.surchargeGross || 0;
           (b.extras || []).forEach((x) => { extras[x.name] = (extras[x.name] || 0) + (x.gross || 0); });
