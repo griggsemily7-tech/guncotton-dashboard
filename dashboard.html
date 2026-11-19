@@ -475,7 +475,7 @@ function renderBreakdown(data){
             const onlySmall = sz.length === 1 && /^(small|mini)$/i.test(sz[0].name);   // a drink that only comes in Small needs no dropdown
             if(!miscHas && (NO_SIZE_ITEMS.test(i.name) || onlySmall || !sz.some(z=>REAL_SIZE.test(z.name)))) return '<div class="prow"><span>'+escHtml(i.name)+'</span><span>'+qty(i.qty)+'</span><span>'+money(g(i))+'</span></div>';
             return '<div class="prow irow"><span><span class="chev">▸</span>'+escHtml(i.name)+'</span><span>'+qty(i.qty)+'</span><span>'+money(g(i))+'</span></div>'+
-              '<div class="isizes">'+sz.map(z=>'<div class="prow"><span>'+escHtml(z.name)+'</span><span>'+qty(z.qty)+'</span><span>'+money(g(z))+'</span></div>').join('')+
+              '<div class="isizes">'+((sz.length===1 && /^regular/i.test(sz[0].name) && det.length) ? [] : sz).map(z=>'<div class="prow"><span>'+escHtml(z.name)+'</span><span>'+qty(z.qty)+'</span><span>'+money(g(z))+'</span></div>').join('')+
               (det.length ? det.map(d=>'<div class="prow"><span><span style="color:var(--muted)">'+(d.kind==='note'?'Note: ':(isShake?(/^(soy|oat|almond|coconut|lactose free|skinny|full cream|lite)$/i.test(d.name)?'Milk: ':'Flavour: '):'Add-on: '))+'</span>'+escHtml(d.name)+'</span><span>'+qty(d.qty)+'</span><span></span></div>').join('') : '')+'</div>';
           }).join('')
     )+'</div>'
