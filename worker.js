@@ -724,13 +724,17 @@ function spreadHourly(map, r, total, day) {
   for (let t = st; t < en;) {
     const slotEnd = (Math.floor((t + OFF) / HR) + 1) * HR - OFF, b = Math.min(slotEnd, en);
     const bt = toBrisbane(new Date(t));
-    if (bt.dateStr === day) { const x = map[bt.hour] || (map[bt.hour] = { wages: 0, hours: 0 }); x.wages += total * (b - t) / dur; x.hours += (b - t) / HR; }
+    if (bt.dateStr === day) {
+      const x = map[bt.hour] || (map[bt.hour] = { wages: 0, hours: 0, ids: new Set() });
+      x.wages += total * (b - t) / dur; x.hours += (b - t) / HR;
+      x.ids.add(String(r.employee && r.employee.id));   // who was working at some point in this hour
+    }
     t = b;
   }
 }
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw30:' + from + ':' + to, incToday ? 300 : 3600, async () => {
+  return cached(env, 'rbw31:' + from + ':' + to, incToday ? 300 : 3600, async () => {
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
@@ -873,7 +877,7 @@ async function roublerWages(env, from, to) {
       if (r.kind === 'timesheet' && (r.hours || 0) > 12) pr.longShift = (pr.longShift || 0) + 1;   // probably forgot to clock out
       if (est) pr.estimated = true; if (cls.section) pr.sections[cls.section] = true;
     });
-    Object.keys(hourlyAgg).forEach((v) => { out[v].hourly = Object.entries(hourlyAgg[v]).map(([h, x]) => ({ hour: +h, wages: x.wages, hours: x.hours })).sort((a, b) => a.hour - b.hour); });
+    Object.keys(hourlyAgg).forEach((v) => { out[v].hourly = Object.entries(hourlyAgg[v]).map(([h, x]) => ({ hour: +h, wages: x.wages, hours: x.hours, people: x.ids ? x.ids.size : 0 })).sort((a, b) => a.hour - b.hour); });
     Object.keys(notClocked).forEach((v) => { out[v].notClockedIn = Object.entries(notClocked[v]).map(([name, hours]) => ({ name, hours })); });
     Object.keys(people).forEach((v) => {
       out[v].people = Object.values(people[v]).map((p) => ({ name: p.name, hours: p.hours, cost: p.cost, perHour: p.hours ? p.cost / p.hours : 0,
