@@ -62,6 +62,13 @@
   .dnote{color:var(--muted);font-size:13px;padding:6px 0}
   .dhead{color:var(--muted);font-size:12px;padding:4px 0 6px}
   .crow{cursor:pointer}
+  .hhead,.hrow{display:grid;grid-template-columns:minmax(0,1fr) 90px 84px 74px 84px;column-gap:10px;align-items:baseline;font-variant-numeric:tabular-nums}
+  .hhead{padding:2px 6px;color:var(--muted);font-size:11px;letter-spacing:.04em;text-transform:uppercase}
+  .hrow{padding:7px 6px;border-bottom:1px solid rgba(255,255,255,.06);font-size:14px}
+  .hhead span:not(:first-child),.hrow span:not(:first-child){text-align:right}
+  .hrow:nth-child(odd){background:rgba(255,255,255,.025)}
+  .hrow.htotal{font-weight:700;border-top:1px solid rgba(255,255,255,.18);border-bottom:none}
+  @media(max-width:600px){.hhead,.hrow{grid-template-columns:minmax(0,1fr) 70px 58px 52px 58px;column-gap:6px;font-size:12px}}
   .srow{display:grid;grid-template-columns:minmax(140px,1fr) 56px 88px 70px 100px 104px 92px;column-gap:14px;align-items:baseline;padding:9px 6px;border-bottom:1px solid rgba(255,255,255,.06);font-variant-numeric:tabular-nums;font-size:15px;border-radius:6px}
   .srow span:not(:first-child){text-align:right}
   .srow:nth-child(even){background:rgba(255,255,255,.025)}
@@ -505,6 +512,33 @@ function renderBreakdown(data){
         }).join('') : '');
 }
 
+// Sales and wages for each hour of one day (any day): wages are Roubler's cost (incl. super & leave) spread over the hours
+// people were working; wage % = that hour's wages ÷ that hour's sales (incl. GST); "day so far" is the running total.
+async function hourlyTableHtml(date){
+  const [sRes, wRes] = await Promise.all([
+    fetch('/api/pos-hours?venue='+currentVenue+'&date='+date, {cache:'no-store'}).then(r=>r.ok?r.json():null).catch(()=>null),
+    fetch('/api/roubler-wages?cur='+date+':'+date, {cache:'no-store'}).then(r=>r.ok?r.json():null).catch(()=>null)
+  ]);
+  const sales = {}; ((sRes && sRes.hours) || []).forEach(h=>{ sales[parseInt(h.hourLabel.split(':')[0],10)] = (h.nett||0)*GST; });
+  const wv = (wRes && wRes.cur && !wRes.error) ? wRes.cur[currentVenue] : null;
+  const wages = {}; ((wv && wv.hourly) || []).forEach(h=>{ wages[h.hour] = h.wages; });
+  const keys = [...new Set([...Object.keys(sales), ...Object.keys(wages)].map(Number))].sort((a,b)=>a-b);
+  if(!keys.length) return '<div class="dnote">No hourly figures for this day</div>';
+  const target = parseFloat((localStorage.getItem('vd_wagetarget')||'').replace(/[^0-9.]/g,''));
+  const m = (n)=> '$'+Math.round(n).toLocaleString();
+  const pct = (w,s)=> s>0 ? (w/s*100).toFixed(0)+'%' : '–';
+  let cs = 0, cw = 0, rows = '';
+  for(let h = keys[0]; h <= keys[keys.length-1]; h++){
+    const s = sales[h]||0, w = wages[h]||0; cs += s; cw += w;
+    const cum = cs>0 ? cw/cs*100 : null;
+    const colour = (cum!=null && !isNaN(target)) ? (cum > target ? 'var(--warn)' : 'var(--good)') : 'inherit';
+    rows += '<div class="hrow"><span>'+h+':00–'+(h+1)+':00</span><span>'+(s? m(s) : '–')+'</span><span>'+(w? m(w) : '–')+'</span><span>'+pct(w,s)+'</span><span style="color:'+colour+'">'+(cum!=null? cum.toFixed(0)+'%' : '–')+'</span></div>';
+  }
+  rows += '<div class="hrow htotal"><span>Day</span><span>'+m(cs)+'</span><span>'+m(cw)+'</span><span>'+pct(cw,cs)+'</span><span></span></div>';
+  return '<div style="margin:6px 0 10px"><div class="dhead">By hour · wage % = wages ÷ sales (incl. GST)'+(wv ? '' : ' · wages unavailable')+'</div>'+
+    '<div class="hhead"><span>Hour</span><span>Sales</span><span>Wages</span><span>Wage %</span><span>Day so far</span></div>'+rows+'</div>';
+}
+
 async function loadDrill(row){
   const key = drillKey(row), box = row.nextElementSibling;
   const cachedRec = drillCache[key];
@@ -515,9 +549,10 @@ async function loadDrill(row){
     const q = row.dataset.to
       ? '/api/square-breakdown-range?from='+row.dataset.date+'&to='+row.dataset.to+'&venue='+currentVenue
       : '/api/square-breakdown?date='+row.dataset.date+(row.dataset.hour!=null?'&hour='+row.dataset.hour:'')+'&venue='+currentVenue;
-    const res = await fetch(q, {cache:'no-store'});
+    const isDay = !row.dataset.to && row.dataset.hour==null;   // a single day: also show it hour by hour
+    const [res, hourlyHtml] = await Promise.all([fetch(q, {cache:'no-store'}), isDay ? hourlyTableHtml(row.dataset.date) : Promise.resolve('')]);
     const data = await res.json();
-    let html = renderBreakdown(data);
+    let html = hourlyHtml + (data.noItemData ? '<div class="dnote">Item detail starts on 17 Nov. The old cafe till (Bepoz) didn\'t record items.</div>' : renderBreakdown(data));
     if(data.pending>0) html = '<div class="dnote">Still adding up '+data.pending+' more day'+(data.pending===1?'':'s')+' — this fills in by itself in a few seconds.</div>' + html;
     // Don't keep a part-finished week in the cache; ask again shortly so the remaining days get added.
     drillCache[key] = {html, t: data.pending>0 ? 0 : Date.now()};
@@ -715,13 +750,21 @@ async function fetchPosHours(myGen, silent){
     if(myGen !== fetchGen) return;
     if(!data.hours || !data.hours.length){ el.innerHTML = '<span style="color:var(--muted)">No sales recorded yet today</span>'; return; }
     const canDrill = true;   // both venues are on Square today
+    // Wages for each hour so far today (from the roster), shown beside each hour's sales as a wage %.
+    const wmap = {};
+    try {
+      const wr = await fetch('/api/roubler-wages?cur='+dateStr+':'+dateStr, {cache:'no-store'}).then(r=>r.ok?r.json():null);
+      const wv = (wr && wr.cur && !wr.error) ? wr.cur[currentVenue] : null;
+      ((wv && wv.hourly) || []).forEach(h=>{ wmap[h.hour] = h.wages; });
+    } catch(e){}
+    if(myGen !== fetchGen) return;
     setPanel(el, data.hours.map(h=>{
       const hr = parseInt(h.hourLabel.split(':')[0],10);
       const attrs = canDrill ? ' drill" data-date="'+dateStr+'" data-hour="'+hr : '';
       const amt = '$'+(h.nett*GST).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
       return '<div class="prow'+attrs+'">'+
         '<span>'+(canDrill?'<span class="chev">▸</span>':'')+h.hourLabel+'</span>'+
-        '<span>'+h.count+' txns</span><span>'+amt+'</span></div>'+
+        '<span>'+h.count+' txns'+((wmap[hr]!=null && h.nett>0) ? ' · '+Math.round(wmap[hr]/(h.nett*GST)*100)+'% wages' : '')+'</span><span>'+amt+'</span></div>'+
         (canDrill ? '<div class="detail" style="display:none"></div>' : '');
     }).join(''));
   }catch(e){ if(myGen===fetchGen) el.innerHTML = '<span style="color:var(--muted)">Not available</span>'; }
@@ -742,7 +785,7 @@ async function fetchDailySales(r, myGen, silent, period){
     const money = (n)=> '$'+n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
     const canDrillMode = (mode==='day' || mode==='week');
     const row = (a,b,count,sales,date,to)=> {
-      const canDrill = canDrillMode && (currentVenue==='doughgirlz' || (to || date) >= SQUARE_NEW_FROM);   // Gun Cotton: Bepoz days have no item detail
+      const canDrill = canDrillMode && (currentVenue==='doughgirlz' || !to || to >= SQUARE_NEW_FROM);   // any single day opens (hourly sales + wages); Gun Cotton week rows need Square item detail
       const attrs = (canDrill && date) ? ' drill" data-date="'+date+(to ? '" data-to="'+to : '') : '';
       return '<div class="drow'+attrs+'"><span>'+(attrs?'<span class="chev">▸</span>':'')+a+'</span><span>'+b+'</span><span>'+count+' txns</span><span>'+money(sales*GST)+'</span></div>'+
         (attrs ? '<div class="detail" style="display:none"></div>' : '');
