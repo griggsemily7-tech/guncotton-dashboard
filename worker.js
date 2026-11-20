@@ -2159,6 +2159,23 @@ export default {
         untagged: { revenue: combined.revenue - sumRevenue, cogs: combined.cogs - sumCogs }
       });
     }
+    // Read-only: what's actually inside the Bepoz reports that get emailed to the dashboard? Lists each sheet's size and a
+    // sample of its cells, so we can see whether any item/product detail comes through. Sales figures and labels only.
+    if (path === '/api/bepoz-report-check') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const keys = []; let cursor;
+      do { const list = await env.TOKENS.list({ prefix: 'bepoz:', cursor }); list.keys.forEach((k) => keys.push(k.name)); cursor = list.list_complete ? null : list.cursor; } while (cursor);
+      keys.sort();
+      const out = { reportsStored: keys.length, firstReceived: keys[0] ? keys[0].slice(6) : null, lastReceived: keys.length ? keys[keys.length - 1].slice(6) : null, newest: [] };
+      for (const k of keys.slice(-2)) {
+        const raw = await env.TOKENS.get(k); if (!raw) continue;
+        const rec = JSON.parse(raw);
+        const sheets = {};
+        Object.entries(rec.sheets || {}).forEach(([name, cells]) => { const e = Object.entries(cells || {}); sheets[name] = { cells: e.length, sample: e.slice(0, 40).map(([ref, v]) => ref + '=' + String(v).slice(0, 40)) }; });
+        out.newest.push({ filename: rec.filename, hourLabel: rec.hourLabel, receivedAt: rec.receivedAt, sheets });
+      }
+      return json(out);
+    }
     if (path === '/api/bepoz-inbox') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
       const list = await env.TOKENS.list({ prefix: 'bepoz:' });
