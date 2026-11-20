@@ -62,13 +62,13 @@
   .dnote{color:var(--muted);font-size:13px;padding:6px 0}
   .dhead{color:var(--muted);font-size:12px;padding:4px 0 6px}
   .crow{cursor:pointer}
-  .hhead,.hrow{display:grid;grid-template-columns:minmax(0,1fr) 90px 84px 74px 84px;column-gap:10px;align-items:baseline;font-variant-numeric:tabular-nums}
+  .hhead,.hrow{display:grid;grid-template-columns:minmax(0,1fr) 84px 76px 64px 52px 78px;column-gap:10px;align-items:baseline;font-variant-numeric:tabular-nums}
   .hhead{padding:2px 6px;color:var(--muted);font-size:11px;letter-spacing:.04em;text-transform:uppercase}
   .hrow{padding:7px 6px;border-bottom:1px solid rgba(255,255,255,.06);font-size:14px}
   .hhead span:not(:first-child),.hrow span:not(:first-child){text-align:right}
   .hrow:nth-child(odd){background:rgba(255,255,255,.025)}
   .hrow.htotal{font-weight:700;border-top:1px solid rgba(255,255,255,.18);border-bottom:none}
-  @media(max-width:600px){.hhead,.hrow{grid-template-columns:minmax(0,1fr) 70px 58px 52px 58px;column-gap:6px;font-size:12px}}
+  @media(max-width:600px){.hhead,.hrow{grid-template-columns:minmax(0,1fr) 62px 52px 46px 38px 52px;column-gap:5px;font-size:12px}}
   .srow{display:grid;grid-template-columns:minmax(140px,1fr) 56px 88px 70px 100px 104px 92px;column-gap:14px;align-items:baseline;padding:9px 6px;border-bottom:1px solid rgba(255,255,255,.06);font-variant-numeric:tabular-nums;font-size:15px;border-radius:6px}
   .srow span:not(:first-child){text-align:right}
   .srow:nth-child(even){background:rgba(255,255,255,.025)}
@@ -521,7 +521,7 @@ async function hourlyTableHtml(date){
   ]);
   const sales = {}; ((sRes && sRes.hours) || []).forEach(h=>{ sales[parseInt(h.hourLabel.split(':')[0],10)] = (h.nett||0)*GST; });
   const wv = (wRes && wRes.cur && !wRes.error) ? wRes.cur[currentVenue] : null;
-  const wages = {}; ((wv && wv.hourly) || []).forEach(h=>{ wages[h.hour] = h.wages; });
+  const wages = {}, staff = {}; ((wv && wv.hourly) || []).forEach(h=>{ wages[h.hour] = h.wages; staff[h.hour] = h.people; });
   const keys = [...new Set([...Object.keys(sales), ...Object.keys(wages)].map(Number))].sort((a,b)=>a-b);
   if(!keys.length) return '<div class="dnote">No hourly figures for this day</div>';
   const target = parseFloat((localStorage.getItem('vd_wagetarget')||'').replace(/[^0-9.]/g,''));
@@ -532,11 +532,11 @@ async function hourlyTableHtml(date){
     const s = sales[h]||0, w = wages[h]||0; cs += s; cw += w;
     const cum = cs>0 ? cw/cs*100 : null;
     const colour = (cum!=null && !isNaN(target)) ? (cum > target ? 'var(--warn)' : 'var(--good)') : 'inherit';
-    rows += '<div class="hrow"><span>'+h+':00–'+(h+1)+':00</span><span>'+(s? m(s) : '–')+'</span><span>'+(w? m(w) : '–')+'</span><span>'+pct(w,s)+'</span><span style="color:'+colour+'">'+(cum!=null? cum.toFixed(0)+'%' : '–')+'</span></div>';
+    rows += '<div class="hrow"><span>'+h+':00–'+(h+1)+':00</span><span>'+(s? m(s) : '–')+'</span><span>'+(w? m(w) : '–')+'</span><span>'+pct(w,s)+'</span><span>'+(staff[h] ? staff[h] : '–')+'</span><span style="color:'+colour+'">'+(cum!=null? cum.toFixed(0)+'%' : '–')+'</span></div>';
   }
-  rows += '<div class="hrow htotal"><span>Day</span><span>'+m(cs)+'</span><span>'+m(cw)+'</span><span>'+pct(cw,cs)+'</span><span></span></div>';
+  rows += '<div class="hrow htotal"><span>Day</span><span>'+m(cs)+'</span><span>'+m(cw)+'</span><span>'+pct(cw,cs)+'</span><span></span><span></span></div>';
   return '<div style="margin:6px 0 10px"><div class="dhead">By hour · wage % = wages ÷ sales (incl. GST)'+(wv ? '' : ' · wages unavailable')+'</div>'+
-    '<div class="hhead"><span>Hour</span><span>Sales</span><span>Wages</span><span>Wage %</span><span>Day so far</span></div>'+rows+'</div>';
+    '<div class="hhead"><span>Hour</span><span>Sales</span><span>Wages</span><span>Wage %</span><span>Staff</span><span>Day so far</span></div>'+rows+'</div>';
 }
 
 async function loadDrill(row){
@@ -751,11 +751,11 @@ async function fetchPosHours(myGen, silent){
     if(!data.hours || !data.hours.length){ el.innerHTML = '<span style="color:var(--muted)">No sales recorded yet today</span>'; return; }
     const canDrill = true;   // both venues are on Square today
     // Wages for each hour so far today (from the roster), shown beside each hour's sales as a wage %.
-    const wmap = {};
+    const wmap = {}, smap = {};
     try {
       const wr = await fetch('/api/roubler-wages?cur='+dateStr+':'+dateStr, {cache:'no-store'}).then(r=>r.ok?r.json():null);
       const wv = (wr && wr.cur && !wr.error) ? wr.cur[currentVenue] : null;
-      ((wv && wv.hourly) || []).forEach(h=>{ wmap[h.hour] = h.wages; });
+      ((wv && wv.hourly) || []).forEach(h=>{ wmap[h.hour] = h.wages; smap[h.hour] = h.people; });
     } catch(e){}
     if(myGen !== fetchGen) return;
     setPanel(el, data.hours.map(h=>{
@@ -763,7 +763,7 @@ async function fetchPosHours(myGen, silent){
       const attrs = canDrill ? ' drill" data-date="'+dateStr+'" data-hour="'+hr : '';
       const amt = '$'+(h.nett*GST).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
       return '<div class="prow'+attrs+'">'+
-        '<span>'+(canDrill?'<span class="chev">▸</span>':'')+h.hourLabel+((wmap[hr]!=null && h.nett>0) ? ' <span style="color:var(--muted);font-size:12px;white-space:nowrap" title="This hour\'s wages as a % of this hour\'s sales">· wages '+Math.round(wmap[hr]/(h.nett*GST)*100)+'%</span>' : '')+'</span>'+
+        '<span>'+(canDrill?'<span class="chev">▸</span>':'')+h.hourLabel+((wmap[hr]!=null && h.nett>0) ? ' <span style="color:var(--muted);font-size:12px;white-space:nowrap" title="This hour\'s wages as a % of this hour\'s sales">· wages '+Math.round(wmap[hr]/(h.nett*GST)*100)+'%'+(smap[hr] ? ' · '+smap[hr]+' staff' : '')+'</span>' : '')+'</span>'+
         '<span>'+h.count+' txn'+(h.count===1?'':'s')+'</span><span>'+amt+'</span></div>'+
         (canDrill ? '<div class="detail" style="display:none"></div>' : '');
     }).join(''));
