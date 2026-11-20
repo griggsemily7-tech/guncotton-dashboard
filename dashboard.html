@@ -763,8 +763,8 @@ async function fetchPosHours(myGen, silent){
       const attrs = canDrill ? ' drill" data-date="'+dateStr+'" data-hour="'+hr : '';
       const amt = '$'+(h.nett*GST).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
       return '<div class="prow'+attrs+'">'+
-        '<span>'+(canDrill?'<span class="chev">▸</span>':'')+h.hourLabel+'</span>'+
-        '<span>'+h.count+' txns'+((wmap[hr]!=null && h.nett>0) ? ' · '+Math.round(wmap[hr]/(h.nett*GST)*100)+'% wages' : '')+'</span><span>'+amt+'</span></div>'+
+        '<span>'+(canDrill?'<span class="chev">▸</span>':'')+h.hourLabel+((wmap[hr]!=null && h.nett>0) ? ' <span style="color:var(--muted);font-size:12px;white-space:nowrap" title="This hour\'s wages as a % of this hour\'s sales">· wages '+Math.round(wmap[hr]/(h.nett*GST)*100)+'%</span>' : '')+'</span>'+
+        '<span>'+h.count+' txn'+(h.count===1?'':'s')+'</span><span>'+amt+'</span></div>'+
         (canDrill ? '<div class="detail" style="display:none"></div>' : '');
     }).join(''));
   }catch(e){ if(myGen===fetchGen) el.innerHTML = '<span style="color:var(--muted)">Not available</span>'; }
