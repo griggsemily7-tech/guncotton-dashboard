@@ -713,9 +713,24 @@ async function roublerPayRunRates(env, token) {
   if (Object.keys(out).length) { PAYRUN_MEMO.v = out; PAYRUN_MEMO.t = Date.now(); }
   return out;
 }
+// Spreads one shift's cost across the clock hours (Brisbane) it covers, in proportion to the time worked in each hour,
+// so wages can be shown hour by hour. For today's roster only the part already worked is spread.
+function spreadHourly(map, r, total, day) {
+  const st = new Date(r.startTime).getTime();
+  let en = r.endTime ? new Date(r.endTime).getTime() : 0;
+  if (r.kind === 'shift') en = Math.min(en, Date.now());
+  if (!(en > st)) return;
+  const dur = en - st, HR = 3600000, OFF = 10 * HR;
+  for (let t = st; t < en;) {
+    const slotEnd = (Math.floor((t + OFF) / HR) + 1) * HR - OFF, b = Math.min(slotEnd, en);
+    const bt = toBrisbane(new Date(t));
+    if (bt.dateStr === day) { const x = map[bt.hour] || (map[bt.hour] = { wages: 0, hours: 0 }); x.wages += total * (b - t) / dur; x.hours += (b - t) / HR; }
+    t = b;
+  }
+}
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw29:' + from + ':' + to, incToday ? 300 : 3600, async () => {
+  return cached(env, 'rbw30:' + from + ':' + to, incToday ? 300 : 3600, async () => {
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
@@ -800,6 +815,7 @@ async function roublerWages(env, from, to) {
     const out = { doughgirlz: blank(), guncotton: { ...blank(), sections: { foh: blank(), kitchen: blank() } } };
     // First pass: each counted shift's base cost, its day and week, so under-18s' weekly hours are known.
     const counted = [], weekHrs = {}, people = {}, notClocked = {};
+    const single = from === to ? from : null, hourlyAgg = {};   // one day: also work out wages hour by hour
     const weekOf = (dateStr) => { const d = new Date(dateStr + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.toISOString().slice(0, 10); };
     rows.forEach((r) => {
       const id = r.employee && r.employee.id;
@@ -846,6 +862,7 @@ async function roublerWages(env, from, to) {
       const add = (b) => { b.wages += total; b.hours += hrs; if (est) b.estimated += total; if (r.kind === 'shift') b.rostered = true; };
       add(out[cls.venue]);
       if (cls.venue === 'guncotton') add(out.guncotton.sections[cls.section]);
+      if (single) spreadHourly(hourlyAgg[cls.venue] || (hourlyAgg[cls.venue] = {}), r, total, single);
       // Per-person totals for the staff breakdown on the Wage % card (kept only as long as the totals are).
       const ppl = people[cls.venue] || (people[cls.venue] = {});
       const pr = ppl[id] || (ppl[id] = { name: (r.employee && r.employee.fullName || 'Unknown').replace(/\s+/g, ' ').trim(), hours: 0, cost: 0, base: 0, sup: 0, leave: 0, salaried, estimated: false, sections: {} });
@@ -856,6 +873,7 @@ async function roublerWages(env, from, to) {
       if (r.kind === 'timesheet' && (r.hours || 0) > 12) pr.longShift = (pr.longShift || 0) + 1;   // probably forgot to clock out
       if (est) pr.estimated = true; if (cls.section) pr.sections[cls.section] = true;
     });
+    Object.keys(hourlyAgg).forEach((v) => { out[v].hourly = Object.entries(hourlyAgg[v]).map(([h, x]) => ({ hour: +h, wages: x.wages, hours: x.hours })).sort((a, b) => a.hour - b.hour); });
     Object.keys(notClocked).forEach((v) => { out[v].notClockedIn = Object.entries(notClocked[v]).map(([name, hours]) => ({ name, hours })); });
     Object.keys(people).forEach((v) => {
       out[v].people = Object.values(people[v]).map((p) => ({ name: p.name, hours: p.hours, cost: p.cost, perHour: p.hours ? p.cost / p.hours : 0,
