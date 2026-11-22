@@ -548,7 +548,7 @@ async function hourlyTableHtml(date){
     const s = sales[h]||0, w = wages[h]||0; cs += s; cw += w;
     const cum = cs>0 ? cw/cs*100 : null;
     const colour = (cum!=null && !isNaN(target)) ? (cum > target ? 'var(--warn)' : 'var(--good)') : 'inherit';
-    rows += '<div class="hscope" data-whoscope="1"><div class="hrow'+(((h-keys[0])%2)?' alt':'')+'"><span>'+h+':00–'+(h+1)+':00</span><span>'+(s? m(s) : '–')+'</span><span>'+(w? m(w) : '–')+'</span><span>'+pct(w,s)+'</span><span>'+((staff[h] || partH[h]) ? '<span class="whoBtn" style="cursor:pointer;text-decoration:underline dotted" title="Tap to see who">'+(staff[h]||0)+(partH[h] ? '+'+partH[h] : '')+'</span>' : '–')+'</span><span style="color:'+colour+'">'+(cum!=null? cum.toFixed(0)+'%' : '–')+'</span></div>'+(whoH[h] && whoH[h].length ? '<div class="whobox" style="display:none;font-size:12px;color:var(--muted);padding:4px 6px 8px">'+whoHtml(whoH[h])+'</div>' : '')+'</div>';
+    rows += '<div class="hscope" data-whoscope="1"><div class="hrow'+(((h-keys[0])%2)?' alt':'')+'"><span>'+h+':00–'+(h+1)+':00</span><span>'+(s? m(s) : '–')+'</span><span>'+(w? m(w) : '–')+'</span><span>'+pct(w,s)+'</span><span>'+(staff[h] ? staff[h] : '–')+'</span><span style="color:'+colour+'">'+(cum!=null? cum.toFixed(0)+'%' : '–')+'</span></div></div>';
   }
   rows += '<div class="hrow htotal"><span>Day</span><span>'+m(cs)+'</span><span>'+m(cw)+'</span><span>'+pct(cw,cs)+'</span><span></span><span></span></div>';
   return '<div style="margin:6px 0 10px"><div class="dhead">By hour'+(wv ? '' : ' · wages unavailable')+'</div>'+
@@ -793,9 +793,9 @@ async function fetchPosHours(myGen, silent){
       const attrs = canRow ? ' drill" data-date="'+dateStr+'" data-hour="'+hr : '';
       const sales = h.noSales ? '–' : '$'+Math.round(h.nett*GST).toLocaleString();
       const wage = wmap[hr]==null ? '–' : (h.nett>0 ? Math.round(wmap[hr]/(h.nett*GST)*100)+'%' : '<span style="color:var(--muted)" title="Wages with no sales that hour">$'+Math.round(wmap[hr]).toLocaleString()+'</span>');
-      const staff = (smap[hr] || partmap[hr]) ? '<span class="whoBtn" style="cursor:pointer;text-decoration:underline dotted" title="Tap to see who">'+(smap[hr]||0)+(partmap[hr] ? '<span style="opacity:.55">+'+partmap[hr]+'</span>' : '')+'</span>' : '–';
+      const staff = smap[hr] ? smap[hr] : '–';
       return '<div class="prow trow'+attrs+'">'+
-        '<span>'+(canRow?'<span class="chev">▸</span>':'')+hr+':00–'+(hr+1)+':00'+(whomap[hr] && whomap[hr].length ? '<div class="whobox" style="display:none;font-size:12px;color:var(--muted);margin-top:3px;white-space:normal">'+whoHtml(whomap[hr])+'</div>' : '')+'</span>'+
+        '<span>'+(canRow?'<span class="chev">▸</span>':'')+hr+':00–'+(hr+1)+':00</span>'+
         '<span>'+(h.noSales ? '' : h.count)+'</span><span>'+sales+'</span><span>'+wage+'</span><span>'+staff+'</span></div>'+
         (canRow ? '<div class="detail" style="display:none"></div>' : '');
     }).join(''));
