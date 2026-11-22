@@ -715,6 +715,12 @@ async function roublerPayRunRates(env, token) {
 }
 // Spreads one shift's cost across the clock hours (Brisbane) it covers, in proportion to the time worked in each hour,
 // so wages can be shown hour by hour. For today's roster only the part already worked is spread.
+// People counted as "working" in an hour: those who worked at least half of it (so someone clocking out at 1:05 isn't
+// counted for the 1–2pm hour). For the hour in progress, half of the time that has passed so far.
+function staffCount(x) {
+  const HR = 3600000, avail = Math.max(0, Math.min(HR, Date.now() - x.slotStart));
+  return Object.values(x.mins).filter((ms) => ms >= 0.5 * avail && ms > 0).length;
+}
 function spreadHourly(map, r, total, day) {
   const st = new Date(r.startTime).getTime();
   let en = r.endTime ? new Date(r.endTime).getTime() : 0;
@@ -725,16 +731,17 @@ function spreadHourly(map, r, total, day) {
     const slotEnd = (Math.floor((t + OFF) / HR) + 1) * HR - OFF, b = Math.min(slotEnd, en);
     const bt = toBrisbane(new Date(t));
     if (bt.dateStr === day) {
-      const x = map[bt.hour] || (map[bt.hour] = { wages: 0, hours: 0, ids: new Set() });
+      const x = map[bt.hour] || (map[bt.hour] = { wages: 0, hours: 0, mins: {}, slotStart: slotEnd - HR });
       x.wages += total * (b - t) / dur; x.hours += (b - t) / HR;
-      x.ids.add(String(r.employee && r.employee.id));   // who was working at some point in this hour
+      const pid = String(r.employee && r.employee.id);
+      x.mins[pid] = (x.mins[pid] || 0) + (b - t);   // how long each person worked in this hour
     }
     t = b;
   }
 }
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw31:' + from + ':' + to, incToday ? 300 : 3600, async () => {
+  return cached(env, 'rbw32:' + from + ':' + to, incToday ? 300 : 3600, async () => {
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
@@ -877,7 +884,7 @@ async function roublerWages(env, from, to) {
       if (r.kind === 'timesheet' && (r.hours || 0) > 12) pr.longShift = (pr.longShift || 0) + 1;   // probably forgot to clock out
       if (est) pr.estimated = true; if (cls.section) pr.sections[cls.section] = true;
     });
-    Object.keys(hourlyAgg).forEach((v) => { out[v].hourly = Object.entries(hourlyAgg[v]).map(([h, x]) => ({ hour: +h, wages: x.wages, hours: x.hours, people: x.ids ? x.ids.size : 0 })).sort((a, b) => a.hour - b.hour); });
+    Object.keys(hourlyAgg).forEach((v) => { out[v].hourly = Object.entries(hourlyAgg[v]).map(([h, x]) => ({ hour: +h, wages: x.wages, hours: x.hours, people: staffCount(x) })).sort((a, b) => a.hour - b.hour); });
     Object.keys(notClocked).forEach((v) => { out[v].notClockedIn = Object.entries(notClocked[v]).map(([name, hours]) => ({ name, hours })); });
     Object.keys(people).forEach((v) => {
       out[v].people = Object.values(people[v]).map((p) => ({ name: p.name, hours: p.hours, cost: p.cost, perHour: p.hours ? p.cost / p.hours : 0,
