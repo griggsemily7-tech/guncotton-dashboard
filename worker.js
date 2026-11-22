@@ -753,7 +753,7 @@ function spreadHourly(map, r, total, day) {
 }
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw38:' + from + ':' + to, incToday ? 60 : 3600, async () => {   // today refreshes every minute, so an early clock-out shows up quickly
+  return cached(env, 'rbw39:' + from + ':' + to, incToday ? 60 : 3600, async () => {   // today refreshes every minute, so an early clock-out shows up quickly
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
@@ -843,8 +843,8 @@ async function roublerWages(env, from, to) {
         iv[id].forEach((w) => {
           let en = w.en == null ? nowMs : w.en, forgot = false;
           // Still clocked in well after their rostered finish = they forgot to clock out. Count them only until the rostered
-          // end (and flag it) rather than letting the time run on. 15 minutes' grace for finishing off.
-          if (w.en == null && rosterEnd > w.st && nowMs > rosterEnd + 15 * 60000) { en = rosterEnd; forgot = true; }
+          // end (and flag it) rather than letting the time run on. One hour's grace for finishing off.
+          if (w.en == null && rosterEnd > w.st && nowMs > rosterEnd + 60 * 60000) { en = rosterEnd; forgot = true; }
           const h = (en - w.st) / 3600000;
           if (!(h > 0)) return;
           kept.push({ ...shifts[0], kind: 'shift', startTime: new Date(w.st).toISOString(), endTime: new Date(en).toISOString(), hours: h, cost: costed ? Math.round(cost / hrs * h) : null, frac: 1, _clock: true, _open: w.en == null && !forgot, _forgot: forgot });
