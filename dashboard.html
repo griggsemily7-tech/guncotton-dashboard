@@ -62,6 +62,9 @@
   .dnote{color:var(--muted);font-size:13px;padding:6px 0}
   .dhead{color:var(--muted);font-size:12px;padding:4px 0 6px}
   .crow{cursor:pointer}
+  .thead,.prow.trow{grid-template-columns:minmax(0,1fr) 44px 72px 56px 48px;column-gap:8px}
+  .thead{display:grid;padding:2px 8px;color:var(--muted);font-size:11px;letter-spacing:.04em;text-transform:uppercase}
+  .thead span:not(:first-child),.prow.trow span:not(:first-child){text-align:right}
   .hhead,.hrow{display:grid;grid-template-columns:minmax(0,1fr) 84px 76px 64px 52px 78px;column-gap:10px;align-items:baseline;font-variant-numeric:tabular-nums}
   .hhead{padding:2px 6px;color:var(--muted);font-size:11px;letter-spacing:.04em;text-transform:uppercase}
   .hrow{padding:7px 6px;border-bottom:1px solid rgba(255,255,255,.06);font-size:14px}
@@ -540,7 +543,7 @@ async function hourlyTableHtml(date){
     rows += '<div class="hscope" data-whoscope="1"><div class="hrow'+(((h-keys[0])%2)?' alt':'')+'"><span>'+h+':00–'+(h+1)+':00</span><span>'+(s? m(s) : '–')+'</span><span>'+(w? m(w) : '–')+'</span><span>'+pct(w,s)+'</span><span>'+((staff[h] || partH[h]) ? '<span class="whoBtn" style="cursor:pointer;text-decoration:underline dotted" title="Tap to see who">'+(staff[h]||0)+(partH[h] ? '+'+partH[h] : '')+'</span>' : '–')+'</span><span style="color:'+colour+'">'+(cum!=null? cum.toFixed(0)+'%' : '–')+'</span></div>'+(whoH[h] && whoH[h].length ? '<div class="whobox" style="display:none;font-size:12px;color:var(--muted);padding:4px 6px 8px">'+whoHtml(whoH[h])+'</div>' : '')+'</div>';
   }
   rows += '<div class="hrow htotal"><span>Day</span><span>'+m(cs)+'</span><span>'+m(cw)+'</span><span>'+pct(cw,cs)+'</span><span></span><span></span></div>';
-  return '<div style="margin:6px 0 10px"><div class="dhead">By hour · wage % = wages ÷ sales (incl. GST)'+(wv ? '' : ' · wages unavailable')+'</div>'+
+  return '<div style="margin:6px 0 10px"><div class="dhead">By hour'+(wv ? '' : ' · wages unavailable')+'</div>'+
     '<div class="hhead"><span>Hour</span><span>Sales</span><span>Wages</span><span>Wage %</span><span>Staff</span><span>Day so far</span></div>'+rows+'</div>';
 }
 
@@ -774,19 +777,18 @@ async function fetchPosHours(myGen, silent){
     const byHr = {}; data.hours.forEach(h=>{ byHr[parseInt(h.hourLabel.split(':')[0],10)] = h; });
     Object.keys(wmap).forEach(k=>{ if(!byHr[k]) byHr[k] = { hourLabel: k+':00-'+(+k+1)+':00', count: 0, nett: 0, noSales: true }; });
     const hrs = Object.keys(byHr).map(Number).sort((a,b)=>a-b);
-    let cumS = 0, cumW = 0;
-    setPanel(el, hrs.map(hr=>{
+    // Compact table: hour | sales | wage % | staff. Tap the staff number to see who. (Day-so-far % is in each day's By hour table.)
+    const head = '<div class="thead"><span>Hour</span><span>Txns</span><span>Sales</span><span>Wage %</span><span>Staff</span></div>';
+    setPanel(el, head + hrs.map(hr=>{
       const h = byHr[hr];
-      cumS += (h.nett||0)*GST; cumW += (wmap[hr]||0);
       const canRow = canDrill && !h.noSales;   // item detail only for hours that had sales
       const attrs = canRow ? ' drill" data-date="'+dateStr+'" data-hour="'+hr : '';
-      const amt = h.noSales ? '–' : '$'+(h.nett*GST).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
-      const staffTxt = (smap[hr] || partmap[hr]) ? ' · <span class="whoBtn" style="cursor:pointer;text-decoration:underline dotted" title="Tap to see who">'+(smap[hr]||0)+' staff'+(partmap[hr] ? ' + '+partmap[hr]+' part-hour' : '')+'</span>' : '';
-      const dayTxt = cumS>0 ? ' · day so far '+Math.round(cumW/cumS*100)+'%' : '';
-      const wageTxt = wmap[hr]==null ? '' : (h.nett>0 ? 'wages '+Math.round(wmap[hr]/(h.nett*GST)*100)+'%' : 'wages $'+Math.round(wmap[hr]).toLocaleString()+' · no sales');
-      return '<div class="prow'+attrs+'">'+
-        '<span>'+(canRow?'<span class="chev">▸</span>':'')+h.hourLabel+(wageTxt ? ' <span style="color:var(--muted);font-size:12px;white-space:nowrap" title="This hour\'s wages as a % of this hour\'s sales">· '+wageTxt+staffTxt+dayTxt+'</span>' : '')+(whomap[hr] && whomap[hr].length ? '<div class="whobox" style="display:none;font-size:12px;color:var(--muted);margin-top:3px;white-space:normal">'+whoHtml(whomap[hr])+'</div>' : '')+'</span>'+
-        '<span>'+(h.noSales ? '' : h.count+' txn'+(h.count===1?'':'s'))+'</span><span>'+amt+'</span></div>'+
+      const sales = h.noSales ? '–' : '$'+Math.round(h.nett*GST).toLocaleString();
+      const wage = wmap[hr]==null ? '–' : (h.nett>0 ? Math.round(wmap[hr]/(h.nett*GST)*100)+'%' : '<span style="color:var(--muted)" title="Wages with no sales that hour">$'+Math.round(wmap[hr]).toLocaleString()+'</span>');
+      const staff = (smap[hr] || partmap[hr]) ? '<span class="whoBtn" style="cursor:pointer;text-decoration:underline dotted" title="Tap to see who">'+(smap[hr]||0)+(partmap[hr] ? '<span style="opacity:.55">+'+partmap[hr]+'</span>' : '')+'</span>' : '–';
+      return '<div class="prow trow'+attrs+'">'+
+        '<span>'+(canRow?'<span class="chev">▸</span>':'')+hr+':00–'+(hr+1)+':00'+(whomap[hr] && whomap[hr].length ? '<div class="whobox" style="display:none;font-size:12px;color:var(--muted);margin-top:3px;white-space:normal">'+whoHtml(whomap[hr])+'</div>' : '')+'</span>'+
+        '<span>'+(h.noSales ? '' : h.count)+'</span><span>'+sales+'</span><span>'+wage+'</span><span>'+staff+'</span></div>'+
         (canRow ? '<div class="detail" style="display:none"></div>' : '');
     }).join(''));
   }catch(e){ if(myGen===fetchGen) el.innerHTML = '<span style="color:var(--muted)">Not available</span>'; }
