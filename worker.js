@@ -721,6 +721,17 @@ function staffCount(x) {
   const HR = 3600000, avail = Math.max(0, Math.min(HR, Date.now() - x.slotStart));
   return Object.values(x.mins).filter((ms) => ms >= 0.5 * avail && ms > 0).length;
 }
+// Who is in that count, with the minutes each worked in the hour and where the time came from (clock / timesheet / roster).
+function staffWho(x) {
+  const HR = 3600000, avail = Math.max(0, Math.min(HR, Date.now() - x.slotStart));
+  return Object.entries(x.mins).filter(([, ms]) => ms > 0)
+    .map(([id, ms]) => ({ name: x.who[id].name, mins: Math.round(ms / 60000), src: x.who[id].src, part: ms < 0.5 * avail })).sort((a, b) => a.name.localeCompare(b.name));
+}
+// People who worked part of the hour but not most of it (not in the staff count, but their wages are in the hour).
+function staffPart(x) {
+  const HR = 3600000, avail = Math.max(0, Math.min(HR, Date.now() - x.slotStart));
+  return Object.values(x.mins).filter((ms) => ms > 0 && ms < 0.5 * avail).length;
+}
 function spreadHourly(map, r, total, day) {
   const st = new Date(r.startTime).getTime();
   let en = r.endTime ? new Date(r.endTime).getTime() : 0;
@@ -731,17 +742,18 @@ function spreadHourly(map, r, total, day) {
     const slotEnd = (Math.floor((t + OFF) / HR) + 1) * HR - OFF, b = Math.min(slotEnd, en);
     const bt = toBrisbane(new Date(t));
     if (bt.dateStr === day) {
-      const x = map[bt.hour] || (map[bt.hour] = { wages: 0, hours: 0, mins: {}, slotStart: slotEnd - HR });
+      const x = map[bt.hour] || (map[bt.hour] = { wages: 0, hours: 0, mins: {}, who: {}, slotStart: slotEnd - HR });
       x.wages += total * (b - t) / dur; x.hours += (b - t) / HR;
       const pid = String(r.employee && r.employee.id);
       x.mins[pid] = (x.mins[pid] || 0) + (b - t);   // how long each person worked in this hour
+      x.who[pid] = { name: String((r.employee && r.employee.fullName) || 'Unknown').replace(/\s+/g, ' ').trim(), src: r._clock ? 'clock' : (r.kind === 'shift' || r.kind === 'rosterOnly') ? 'roster' : 'timesheet' };
     }
     t = b;
   }
 }
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw35:' + from + ':' + to, incToday ? 60 : 3600, async () => {   // today refreshes every minute, so an early clock-out shows up quickly
+  return cached(env, 'rbw37:' + from + ':' + to, incToday ? 60 : 3600, async () => {   // today refreshes every minute, so an early clock-out shows up quickly
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
@@ -914,7 +926,7 @@ async function roublerWages(env, from, to) {
       if (r.kind === 'timesheet' && (r.hours || 0) > 12) pr.longShift = (pr.longShift || 0) + 1;   // probably forgot to clock out
       if (est) pr.estimated = true; if (cls.section) pr.sections[cls.section] = true;
     });
-    Object.keys(hourlyAgg).forEach((v) => { out[v].hourly = Object.entries(hourlyAgg[v]).map(([h, x]) => ({ hour: +h, wages: x.wages, hours: x.hours, people: staffCount(x) })).sort((a, b) => a.hour - b.hour); });
+    Object.keys(hourlyAgg).forEach((v) => { out[v].hourly = Object.entries(hourlyAgg[v]).map(([h, x]) => ({ hour: +h, wages: x.wages, hours: x.hours, people: staffCount(x), part: staffPart(x), who: staffWho(x) })).sort((a, b) => a.hour - b.hour); });
     Object.keys(notClocked).forEach((v) => { out[v].notClockedIn = Object.entries(notClocked[v]).map(([name, hours]) => ({ name, hours })); });
     Object.keys(people).forEach((v) => {
       out[v].people = Object.values(people[v]).map((p) => ({ name: p.name, hours: p.hours, cost: p.cost, perHour: p.hours ? p.cost / p.hours : 0,
