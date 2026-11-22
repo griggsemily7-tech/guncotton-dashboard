@@ -62,6 +62,11 @@
   .dnote{color:var(--muted);font-size:13px;padding:6px 0}
   .dhead{color:var(--muted);font-size:12px;padding:4px 0 6px}
   .crow{cursor:pointer}
+  .whogrid{max-width:320px;margin:2px 0}
+  .whorow{display:flex;justify-content:space-between;gap:18px;padding:2px 0;color:var(--text,#e5e7eb);font-size:13px}
+  .whorow.part{opacity:.45}
+  .whorow em{color:var(--warn);font-style:normal;font-size:11px;margin-left:8px}
+  .whonote{font-size:11px;color:var(--muted);margin-top:3px}
   .thead,.prow.trow{grid-template-columns:minmax(0,1fr) 44px 72px 56px 48px;column-gap:8px}
   .thead{display:grid;padding:2px 8px;color:var(--muted);font-size:11px;letter-spacing:.04em;text-transform:uppercase}
   .thead span:not(:first-child),.prow.trow span:not(:first-child){text-align:right}
@@ -520,7 +525,10 @@ function renderBreakdown(data){
 // "Who was working": the names behind a staff count for an hour, with minutes worked and where the time came from.
 function whoHtml(who){
   if(!who || !who.length) return '';
-  return who.map(w=> escHtml(w.name)+' <span style="opacity:.7">'+w.mins+'m</span>'+(w.part ? ' <span style="opacity:.7">(part of the hour)</span>' : '')+(w.src==='roster' ? ' <span style="color:var(--warn)">(rostered, not clocked)</span>' : '')).join(' · ');
+  // One name per line with the minutes worked; people who worked under half the hour are dimmed.
+  const rows = who.slice().sort((a,b)=> (a.part-b.part) || a.name.localeCompare(b.name)).map(w=>
+    '<div class="whorow'+(w.part?' part':'')+'"><span>'+escHtml(w.name)+(w.src==='roster' ? '<em>not clocked in</em>' : '')+'</span><span>'+w.mins+'m</span></div>').join('');
+  return '<div class="whogrid">'+rows+'</div>'+(who.some(w=>w.part) ? '<div class="whonote">Dimmed = worked under half the hour</div>' : '');
 }
 async function hourlyTableHtml(date){
   const [sRes, wRes] = await Promise.all([
