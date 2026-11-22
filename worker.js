@@ -753,7 +753,7 @@ function spreadHourly(map, r, total, day) {
 }
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw37:' + from + ':' + to, incToday ? 60 : 3600, async () => {   // today refreshes every minute, so an early clock-out shows up quickly
+  return cached(env, 'rbw38:' + from + ':' + to, incToday ? 60 : 3600, async () => {   // today refreshes every minute, so an early clock-out shows up quickly
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
@@ -839,10 +839,15 @@ async function roublerWages(env, from, to) {
       Object.entries(byPerson).forEach(([id, shifts]) => {
         const cost = shifts.reduce((a, r) => a + (r.cost == null ? 0 : r.cost), 0), hrs = shifts.reduce((a, r) => a + (r.hours || 0), 0);
         const costed = shifts.every((r) => r.cost != null) && hrs > 0;
+        const rosterEnd = Math.max(...shifts.map((r) => new Date(r.endTime).getTime()));
         iv[id].forEach((w) => {
-          const en = w.en == null ? nowMs : w.en, h = (en - w.st) / 3600000;
+          let en = w.en == null ? nowMs : w.en, forgot = false;
+          // Still clocked in well after their rostered finish = they forgot to clock out. Count them only until the rostered
+          // end (and flag it) rather than letting the time run on. 15 minutes' grace for finishing off.
+          if (w.en == null && rosterEnd > w.st && nowMs > rosterEnd + 15 * 60000) { en = rosterEnd; forgot = true; }
+          const h = (en - w.st) / 3600000;
           if (!(h > 0)) return;
-          kept.push({ ...shifts[0], kind: 'shift', startTime: new Date(w.st).toISOString(), endTime: new Date(en).toISOString(), hours: h, cost: costed ? Math.round(cost / hrs * h) : null, frac: 1, _clock: true, _open: w.en == null });
+          kept.push({ ...shifts[0], kind: 'shift', startTime: new Date(w.st).toISOString(), endTime: new Date(en).toISOString(), hours: h, cost: costed ? Math.round(cost / hrs * h) : null, frac: 1, _clock: true, _open: w.en == null && !forgot, _forgot: forgot });
         });
       });
       rows = kept;
@@ -920,8 +925,9 @@ async function roublerWages(env, from, to) {
       pr.hours += hrs; pr.cost += total; pr.base += base; pr.sup += sup; pr.leave += leave;
       if (r.kind === 'rosterOnly') pr.noClock = (pr.noClock || 0) + 1;
       if (r._nc) pr.notClockedIn = true;
+      if (r._forgot) pr.forgotOut = true;
       // For a single day: when each person clocked in and out (or the rostered times if they haven't clocked).
-      if (single) (pr.times = pr.times || []).push({ in: r.startTime, out: (r._open ? null : r.endTime) || null, src: r._clock ? 'clock' : (r.kind === 'shift' || r.kind === 'rosterOnly') ? 'roster' : 'timesheet' });
+      if (single) (pr.times = pr.times || []).push({ in: r.startTime, out: (r._open ? null : r.endTime) || null, src: r._clock ? 'clock' : (r.kind === 'shift' || r.kind === 'rosterOnly') ? 'roster' : 'timesheet', forgot: !!r._forgot });
       if (trial) pr.trial = true;
       if (r.kind === 'timesheet' && (r.hours || 0) > 12) pr.longShift = (pr.longShift || 0) + 1;   // probably forgot to clock out
       if (est) pr.estimated = true; if (cls.section) pr.sections[cls.section] = true;
@@ -931,7 +937,7 @@ async function roublerWages(env, from, to) {
     Object.keys(people).forEach((v) => {
       out[v].people = Object.values(people[v]).map((p) => ({ name: p.name, hours: p.hours, cost: p.cost, perHour: p.hours ? p.cost / p.hours : 0,
         times: (p.times || []).sort((a, b) => String(a.in).localeCompare(String(b.in))),
-        trial: !!p.trial, notClockedIn: !!p.notClockedIn, noClock: p.noClock || 0, longShift: p.longShift || 0, salaried: p.salaried, basePerHour: p.hours ? p.base / p.hours : 0, superPerHour: p.hours ? p.sup / p.hours : 0, leavePerHour: p.hours ? p.leave / p.hours : 0,
+        forgotOut: !!p.forgotOut, trial: !!p.trial, notClockedIn: !!p.notClockedIn, noClock: p.noClock || 0, longShift: p.longShift || 0, salaried: p.salaried, basePerHour: p.hours ? p.base / p.hours : 0, superPerHour: p.hours ? p.sup / p.hours : 0, leavePerHour: p.hours ? p.leave / p.hours : 0,
         estimated: p.estimated, section: Object.keys(p.sections).length === 1 ? Object.keys(p.sections)[0] : (Object.keys(p.sections).length ? 'both' : null) }))
         .sort((a, b) => b.cost - a.cost);
     });
