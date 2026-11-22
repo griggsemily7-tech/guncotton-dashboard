@@ -66,7 +66,7 @@
   .hhead{padding:2px 6px;color:var(--muted);font-size:11px;letter-spacing:.04em;text-transform:uppercase}
   .hrow{padding:7px 6px;border-bottom:1px solid rgba(255,255,255,.06);font-size:14px}
   .hhead span:not(:first-child),.hrow span:not(:first-child){text-align:right}
-  .hrow:nth-child(odd){background:rgba(255,255,255,.025)}
+  .hrow.alt{background:rgba(255,255,255,.025)}
   .hrow.htotal{font-weight:700;border-top:1px solid rgba(255,255,255,.18);border-bottom:none}
   @media(max-width:600px){.hhead,.hrow{grid-template-columns:minmax(0,1fr) 62px 52px 46px 38px 52px;column-gap:5px;font-size:12px}}
   .srow{display:grid;grid-template-columns:minmax(140px,1fr) 56px 88px 70px 100px 104px 92px;column-gap:14px;align-items:baseline;padding:9px 6px;border-bottom:1px solid rgba(255,255,255,.06);font-variant-numeric:tabular-nums;font-size:15px;border-radius:6px}
@@ -514,6 +514,11 @@ function renderBreakdown(data){
 
 // Sales and wages for each hour of one day (any day): wages are Roubler's cost (incl. super & leave) spread over the hours
 // people were working; wage % = that hour's wages ÷ that hour's sales (incl. GST); "day so far" is the running total.
+// "Who was working": the names behind a staff count for an hour, with minutes worked and where the time came from.
+function whoHtml(who){
+  if(!who || !who.length) return '';
+  return who.map(w=> escHtml(w.name)+' <span style="opacity:.7">'+w.mins+'m</span>'+(w.part ? ' <span style="opacity:.7">(part of the hour)</span>' : '')+(w.src==='roster' ? ' <span style="color:var(--warn)">(rostered, not clocked)</span>' : '')).join(' · ');
+}
 async function hourlyTableHtml(date){
   const [sRes, wRes] = await Promise.all([
     fetch('/api/pos-hours?venue='+currentVenue+'&date='+date, {cache:'no-store'}).then(r=>r.ok?r.json():null).catch(()=>null),
@@ -521,7 +526,7 @@ async function hourlyTableHtml(date){
   ]);
   const sales = {}; ((sRes && sRes.hours) || []).forEach(h=>{ sales[parseInt(h.hourLabel.split(':')[0],10)] = (h.nett||0)*GST; });
   const wv = (wRes && wRes.cur && !wRes.error) ? wRes.cur[currentVenue] : null;
-  const wages = {}, staff = {}; ((wv && wv.hourly) || []).forEach(h=>{ wages[h.hour] = h.wages; staff[h.hour] = h.people; });
+  const wages = {}, staff = {}, partH = {}, whoH = {}; ((wv && wv.hourly) || []).forEach(h=>{ wages[h.hour] = h.wages; staff[h.hour] = h.people; partH[h.hour] = h.part; whoH[h.hour] = h.who; });
   const keys = [...new Set([...Object.keys(sales), ...Object.keys(wages)].map(Number))].sort((a,b)=>a-b);
   if(!keys.length) return '<div class="dnote">No hourly figures for this day</div>';
   const target = parseFloat((localStorage.getItem('vd_wagetarget')||'').replace(/[^0-9.]/g,''));
@@ -532,7 +537,7 @@ async function hourlyTableHtml(date){
     const s = sales[h]||0, w = wages[h]||0; cs += s; cw += w;
     const cum = cs>0 ? cw/cs*100 : null;
     const colour = (cum!=null && !isNaN(target)) ? (cum > target ? 'var(--warn)' : 'var(--good)') : 'inherit';
-    rows += '<div class="hrow"><span>'+h+':00–'+(h+1)+':00</span><span>'+(s? m(s) : '–')+'</span><span>'+(w? m(w) : '–')+'</span><span>'+pct(w,s)+'</span><span>'+(staff[h] ? staff[h] : '–')+'</span><span style="color:'+colour+'">'+(cum!=null? cum.toFixed(0)+'%' : '–')+'</span></div>';
+    rows += '<div class="hscope" data-whoscope="1"><div class="hrow'+(((h-keys[0])%2)?' alt':'')+'"><span>'+h+':00–'+(h+1)+':00</span><span>'+(s? m(s) : '–')+'</span><span>'+(w? m(w) : '–')+'</span><span>'+pct(w,s)+'</span><span>'+((staff[h] || partH[h]) ? '<span class="whoBtn" style="cursor:pointer;text-decoration:underline dotted" title="Tap to see who">'+(staff[h]||0)+(partH[h] ? '+'+partH[h] : '')+'</span>' : '–')+'</span><span style="color:'+colour+'">'+(cum!=null? cum.toFixed(0)+'%' : '–')+'</span></div>'+(whoH[h] && whoH[h].length ? '<div class="whobox" style="display:none;font-size:12px;color:var(--muted);padding:4px 6px 8px">'+whoHtml(whoH[h])+'</div>' : '')+'</div>';
   }
   rows += '<div class="hrow htotal"><span>Day</span><span>'+m(cs)+'</span><span>'+m(cw)+'</span><span>'+pct(cw,cs)+'</span><span></span><span></span></div>';
   return '<div style="margin:6px 0 10px"><div class="dhead">By hour · wage % = wages ÷ sales (incl. GST)'+(wv ? '' : ' · wages unavailable')+'</div>'+
@@ -562,6 +567,13 @@ async function loadDrill(row){
 }
 
 document.addEventListener('click', (e)=>{
+  const whoBtn = e.target.closest('.whoBtn');   // tap a staff count to see who it is
+  if(whoBtn){
+    const box = whoBtn.closest('[data-whoscope]') ? whoBtn.closest('[data-whoscope]').querySelector('.whobox') : null;
+    const target = box || (whoBtn.parentElement && whoBtn.parentElement.parentElement && whoBtn.parentElement.parentElement.querySelector('.whobox'));
+    if(target) target.style.display = target.style.display === 'block' ? 'none' : 'block';
+    e.stopPropagation(); return;
+  }
   const itemRow = e.target.closest('.irow');
   if(itemRow){
     const box = itemRow.nextElementSibling, open = box.style.display === 'block';
@@ -751,21 +763,31 @@ async function fetchPosHours(myGen, silent){
     if(!data.hours || !data.hours.length){ el.innerHTML = '<span style="color:var(--muted)">No sales recorded yet today</span>'; return; }
     const canDrill = true;   // both venues are on Square today
     // Wages for each hour so far today (from the roster), shown beside each hour's sales as a wage %.
-    const wmap = {}, smap = {};
+    const wmap = {}, smap = {}, whomap = {}, partmap = {};
     try {
       const wr = await fetch('/api/roubler-wages?cur='+dateStr+':'+dateStr, {cache:'no-store'}).then(r=>r.ok?r.json():null);
       const wv = (wr && wr.cur && !wr.error) ? wr.cur[currentVenue] : null;
-      ((wv && wv.hourly) || []).forEach(h=>{ wmap[h.hour] = h.wages; smap[h.hour] = h.people; });
+      ((wv && wv.hourly) || []).forEach(h=>{ wmap[h.hour] = h.wages; smap[h.hour] = h.people; partmap[h.hour] = h.part; whomap[h.hour] = h.who; });
     } catch(e){}
     if(myGen !== fetchGen) return;
-    setPanel(el, data.hours.map(h=>{
-      const hr = parseInt(h.hourLabel.split(':')[0],10);
-      const attrs = canDrill ? ' drill" data-date="'+dateStr+'" data-hour="'+hr : '';
-      const amt = '$'+(h.nett*GST).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+    // Every hour with sales OR wages is listed, so staff finishing up before opening / after closing still show.
+    const byHr = {}; data.hours.forEach(h=>{ byHr[parseInt(h.hourLabel.split(':')[0],10)] = h; });
+    Object.keys(wmap).forEach(k=>{ if(!byHr[k]) byHr[k] = { hourLabel: k+':00-'+(+k+1)+':00', count: 0, nett: 0, noSales: true }; });
+    const hrs = Object.keys(byHr).map(Number).sort((a,b)=>a-b);
+    let cumS = 0, cumW = 0;
+    setPanel(el, hrs.map(hr=>{
+      const h = byHr[hr];
+      cumS += (h.nett||0)*GST; cumW += (wmap[hr]||0);
+      const canRow = canDrill && !h.noSales;   // item detail only for hours that had sales
+      const attrs = canRow ? ' drill" data-date="'+dateStr+'" data-hour="'+hr : '';
+      const amt = h.noSales ? '–' : '$'+(h.nett*GST).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+      const staffTxt = (smap[hr] || partmap[hr]) ? ' · <span class="whoBtn" style="cursor:pointer;text-decoration:underline dotted" title="Tap to see who">'+(smap[hr]||0)+' staff'+(partmap[hr] ? ' + '+partmap[hr]+' part-hour' : '')+'</span>' : '';
+      const dayTxt = cumS>0 ? ' · day so far '+Math.round(cumW/cumS*100)+'%' : '';
+      const wageTxt = wmap[hr]==null ? '' : (h.nett>0 ? 'wages '+Math.round(wmap[hr]/(h.nett*GST)*100)+'%' : 'wages $'+Math.round(wmap[hr]).toLocaleString()+' · no sales');
       return '<div class="prow'+attrs+'">'+
-        '<span>'+(canDrill?'<span class="chev">▸</span>':'')+h.hourLabel+((wmap[hr]!=null && h.nett>0) ? ' <span style="color:var(--muted);font-size:12px;white-space:nowrap" title="This hour\'s wages as a % of this hour\'s sales">· wages '+Math.round(wmap[hr]/(h.nett*GST)*100)+'%'+(smap[hr] ? ' · '+smap[hr]+' staff' : '')+'</span>' : '')+'</span>'+
-        '<span>'+h.count+' txn'+(h.count===1?'':'s')+'</span><span>'+amt+'</span></div>'+
-        (canDrill ? '<div class="detail" style="display:none"></div>' : '');
+        '<span>'+(canRow?'<span class="chev">▸</span>':'')+h.hourLabel+(wageTxt ? ' <span style="color:var(--muted);font-size:12px;white-space:nowrap" title="This hour\'s wages as a % of this hour\'s sales">· '+wageTxt+staffTxt+dayTxt+'</span>' : '')+(whomap[hr] && whomap[hr].length ? '<div class="whobox" style="display:none;font-size:12px;color:var(--muted);margin-top:3px;white-space:normal">'+whoHtml(whomap[hr])+'</div>' : '')+'</span>'+
+        '<span>'+(h.noSales ? '' : h.count+' txn'+(h.count===1?'':'s'))+'</span><span>'+amt+'</span></div>'+
+        (canRow ? '<div class="detail" style="display:none"></div>' : '');
     }).join(''));
   }catch(e){ if(myGen===fetchGen) el.innerHTML = '<span style="color:var(--muted)">Not available</span>'; }
 }
