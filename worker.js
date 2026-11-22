@@ -741,7 +741,7 @@ function spreadHourly(map, r, total, day) {
 }
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw32:' + from + ':' + to, incToday ? 300 : 3600, async () => {
+  return cached(env, 'rbw35:' + from + ':' + to, incToday ? 60 : 3600, async () => {   // today refreshes every minute, so an early clock-out shows up quickly
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
@@ -755,7 +755,7 @@ async function roublerWages(env, from, to) {
     const pastEnd = (to < today ? to : addDaysStr(today, -1));
     const rosterP = from <= pastEnd ? roublerGraphQL(env, { operationName: 'Ro', query: 'query Ro($s: DateTime!, $e: DateTime!) { shifts(startTime: $s, endTime: $e, includeCostings: true) { startTime endTime hours cost published employee { id fullName } location { name } position { name } } }' }, { s: start, e: pastEnd + 'T23:59:59+10:00' }, token).catch(() => null) : Promise.resolve(null);
     // Who has clocked in today (only needed for today's roster): a rostered person who never clocked in isn't counted.
-    const clocksP = inclToday ? roublerGraphQL(env, { operationName: 'Cl', query: 'query Cl($s: DateTime, $e: DateTime) { clocks(startTime: $s, endTime: $e) { clockStatus employeeId } }' }, { s: today + 'T00:00:00+10:00', e: new Date().toISOString() }, token).catch(() => null) : Promise.resolve(null);
+    const clocksP = inclToday ? roublerGraphQL(env, { operationName: 'Cl', query: 'query Cl($s: DateTime, $e: DateTime) { clocks(startTime: $s, endTime: $e) { clockStatus employeeId timeServer } }' }, { s: today + 'T00:00:00+10:00', e: new Date().toISOString() }, token).catch(() => null) : Promise.resolve(null);
     const [emp, ts, shRes, payRates, roster, clocksRes] = await Promise.all([empP, tsP, shP, roublerPayRunRates(env, token), rosterP, clocksP]);
     const clocksOk = !!(clocksRes && clocksRes.data && Array.isArray(clocksRes.data.clocks));
     const clockedIn = new Set(((clocksOk && clocksRes.data.clocks) || []).filter((c) => /in/i.test(c.clockStatus || '')).map((c) => String(c.employeeId)));
@@ -807,6 +807,34 @@ async function roublerWages(env, from, to) {
       if (day < from || day > pastEnd || hadTimesheet.has(x.employee.id + '|' + day)) return;
       rows.push({ ...x, kind: 'rosterOnly' });
     });
+    // Today: use the times people ACTUALLY clocked in and out, not the rostered times. Someone who clocked out at 1:05 doesn't
+    // count as working until 2pm. A person who has clocked in gets their rostered shifts replaced by their real worked time
+    // (still working = up to now), at the same hourly cost as their rostered shifts. Anyone not clocked in yet stays on the roster.
+    if (clocksOk) {
+      const evs = (clocksRes.data.clocks || []).filter((c) => c.timeServer && /^clock(in|out)$/i.test(c.clockStatus || '')).sort((a, b) => String(a.timeServer).localeCompare(String(b.timeServer)));
+      const open = {}, iv = {};
+      evs.forEach((c) => {
+        const id = String(c.employeeId), t = new Date(c.timeServer).getTime();
+        if (/^clockin$/i.test(c.clockStatus)) { if (open[id] == null) open[id] = t; }
+        else if (open[id] != null) { (iv[id] = iv[id] || []).push({ st: open[id], en: t }); delete open[id]; }
+      });
+      Object.keys(open).forEach((id) => { (iv[id] = iv[id] || []).push({ st: open[id], en: null }); });
+      const nowMs = Date.now(), kept = [], byPerson = {};
+      rows.forEach((r) => {
+        const id = r.employee && String(r.employee.id);
+        if (r.kind === 'shift' && id && iv[id]) (byPerson[id] = byPerson[id] || []).push(r); else kept.push(r);
+      });
+      Object.entries(byPerson).forEach(([id, shifts]) => {
+        const cost = shifts.reduce((a, r) => a + (r.cost == null ? 0 : r.cost), 0), hrs = shifts.reduce((a, r) => a + (r.hours || 0), 0);
+        const costed = shifts.every((r) => r.cost != null) && hrs > 0;
+        iv[id].forEach((w) => {
+          const en = w.en == null ? nowMs : w.en, h = (en - w.st) / 3600000;
+          if (!(h > 0)) return;
+          kept.push({ ...shifts[0], kind: 'shift', startTime: new Date(w.st).toISOString(), endTime: new Date(en).toISOString(), hours: h, cost: costed ? Math.round(cost / hrs * h) : null, frac: 1, _clock: true, _open: w.en == null });
+        });
+      });
+      rows = kept;
+    }
     rows = rows.filter((r) => !notWorkedOn(r.employee && r.employee.fullName, toBrisbane(new Date(r.startTime)).dateStr));
     rows = applyTimeOverrides(rows);
     const rate = {}; let allCost = 0, allHrs = 0;
@@ -880,6 +908,8 @@ async function roublerWages(env, from, to) {
       pr.hours += hrs; pr.cost += total; pr.base += base; pr.sup += sup; pr.leave += leave;
       if (r.kind === 'rosterOnly') pr.noClock = (pr.noClock || 0) + 1;
       if (r._nc) pr.notClockedIn = true;
+      // For a single day: when each person clocked in and out (or the rostered times if they haven't clocked).
+      if (single) (pr.times = pr.times || []).push({ in: r.startTime, out: (r._open ? null : r.endTime) || null, src: r._clock ? 'clock' : (r.kind === 'shift' || r.kind === 'rosterOnly') ? 'roster' : 'timesheet' });
       if (trial) pr.trial = true;
       if (r.kind === 'timesheet' && (r.hours || 0) > 12) pr.longShift = (pr.longShift || 0) + 1;   // probably forgot to clock out
       if (est) pr.estimated = true; if (cls.section) pr.sections[cls.section] = true;
@@ -888,6 +918,7 @@ async function roublerWages(env, from, to) {
     Object.keys(notClocked).forEach((v) => { out[v].notClockedIn = Object.entries(notClocked[v]).map(([name, hours]) => ({ name, hours })); });
     Object.keys(people).forEach((v) => {
       out[v].people = Object.values(people[v]).map((p) => ({ name: p.name, hours: p.hours, cost: p.cost, perHour: p.hours ? p.cost / p.hours : 0,
+        times: (p.times || []).sort((a, b) => String(a.in).localeCompare(String(b.in))),
         trial: !!p.trial, notClockedIn: !!p.notClockedIn, noClock: p.noClock || 0, longShift: p.longShift || 0, salaried: p.salaried, basePerHour: p.hours ? p.base / p.hours : 0, superPerHour: p.hours ? p.sup / p.hours : 0, leavePerHour: p.hours ? p.leave / p.hours : 0,
         estimated: p.estimated, section: Object.keys(p.sections).length === 1 ? Object.keys(p.sections)[0] : (Object.keys(p.sections).length ? 'both' : null) }))
         .sort((a, b) => b.cost - a.cost);
