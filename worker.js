@@ -944,6 +944,80 @@ async function roublerWages(env, from, to) {
     return out;
   });
 }
+// ---- Roster preview: rostered wages for upcoming days vs the usual sales for that weekday ----
+async function roublerEmployeeList(env, token) {
+  if (ROUBLER_EMP_MEMO.t && Date.now() - ROUBLER_EMP_MEMO.t < 3600000) return ROUBLER_EMP_MEMO.v;
+  const v = await roublerGraphQL(env, { operationName: 'Emp', query: 'query Emp { employees { id fullName payBasis payType payLevel { id name } position { name } person { dateOfBirth } } }' }, {}, token);
+  ROUBLER_EMP_MEMO.v = v; ROUBLER_EMP_MEMO.t = Date.now(); return v;
+}
+async function rosterForecast(env, venue, days) {
+  const today = toBrisbane(new Date()).dateStr, from = addDaysStr(today, 1), to = addDaysStr(today, days);
+  return cached(env, 'rfc2:' + venue + ':' + from + ':' + days, 300, async () => {
+    const token = await roublerRefresh(env);
+    const [empRes, shRes] = await Promise.all([
+      roublerEmployeeList(env, token),
+      roublerGraphQL(env, { operationName: 'Fc', query: 'query Fc($s: DateTime!, $e: DateTime!) { shifts(startTime: $s, endTime: $e, includeCostings: true) { startTime endTime hours cost published employee { id fullName } location { name } position { name } } }' }, { s: from + 'T00:00:00+10:00', e: to + 'T23:59:59+10:00' }, token)
+    ]);
+    const mainPos = {}, info = {};
+    ((empRes && empRes.data && empRes.data.employees) || []).forEach((e) => {
+      mainPos[e.id] = e.position && e.position.name;
+      info[e.id] = { salaried: e.payType === 2, dob: e.person && e.person.dateOfBirth ? String(e.person.dateOfBirth).slice(0, 10) : null };
+    });
+    const under18 = (id, dateStr) => {
+      const d = info[id] && info[id].dob; if (!d) return false;
+      const [y, m, dd] = d.split('-').map(Number), [Y, M, D] = dateStr.split('-').map(Number);
+      return (Y - y - ((M < m || (M === m && D < dd)) ? 1 : 0)) < 18;
+    };
+    const weekOf = (dateStr) => { const d = new Date(dateStr + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.toISOString().slice(0, 10); };
+    // The shifts that belong to this venue, with where each person works.
+    const shifts = [];
+    ((shRes && shRes.data && shRes.data.shifts) || []).forEach((x) => {
+      if (!x.employee || !(x.hours > 0)) return;
+      const day = toBrisbane(new Date(x.startTime)).dateStr;
+      if (day < from || day > to) return;
+      const cls = roublerClassify(x.location && x.location.name, x.position && x.position.name, mainPos[x.employee.id], x.employee.fullName);
+      if (!cls || cls.venue !== venue) return;
+      shifts.push({ x, day, cls });
+    });
+    // A usual cost per hour for shifts Roubler hasn't costed (their own costed shifts first, then everyone's average).
+    const own = {}; let allC = 0, allH = 0;
+    shifts.forEach(({ x }) => { if (x.cost != null && !isTrialRow(x) && personRateOf(x) == null) { const o = own[x.employee.id] || (own[x.employee.id] = { c: 0, h: 0 }); o.c += x.cost / 100; o.h += x.hours; allC += x.cost / 100; allH += x.hours; } });
+    const avgRate = allH ? allC / allH : 0;
+    const weekHrs = {}; shifts.forEach(({ x, day }) => { const k = x.employee.id + '|' + weekOf(day); weekHrs[k] = (weekHrs[k] || 0) + x.hours; });
+    const byDay = {};
+    shifts.forEach(({ x, day, cls }) => {
+      const id = x.employee.id, trial = isTrialRow(x), setRate = personRateOf(x), pr = personOf(x);
+      let base = x.cost != null ? x.cost / 100 : null, est = false;
+      if (trial) base = x.hours * TRIAL_RATE;
+      else if (setRate != null) base = x.hours * setRate;
+      else if (base == null) { const o = own[id]; base = x.hours * (o && o.h ? o.c / o.h : avgRate); est = true; }
+      const gotSuper = !trial && (!under18(id, day) || weekHrs[id + '|' + weekOf(day)] > 30);
+      const sup = gotSuper ? base * superRateOn(day) : 0;
+      const salaried = !trial && ((pr && pr.leave) || (info[id] && info[id].salaried));
+      const leave = salaried ? (base + sup) * (SALARY_LEAVE_FACTOR - 1) : 0;
+      const d = byDay[day] || (byDay[day] = { date: day, wages: 0, hours: 0, sections: { foh: 0, kitchen: 0 }, people: [] });
+      const total = base + sup + leave;
+      d.wages += total; d.hours += x.hours;
+      if (cls.section) d.sections[cls.section] += total;
+      d.people.push({ name: String(x.employee.fullName || '').replace(/\s+/g, ' ').trim(), start: x.startTime, end: x.endTime, hours: x.hours, cost: total, section: cls.section, draft: x.published === false, estimated: est });
+    });
+    // The usual sales for each weekday: the average of that weekday over its last 4 occurrences (incl. GST).
+    const hFrom = addDaysStr(today, -35), hTo = addDaysStr(today, -1), budget = { left: 25 };
+    let hist = { days: [], pending: 0 };
+    try { hist = venue === 'guncotton' ? await gcDaily(env, hFrom, hTo, budget) : await squareDailySummary(env, hFrom, hTo, budget, 'doughgirlz'); } catch (e) {}
+    const sales = {}; hist.days.forEach((d) => { sales[d.date] = (sales[d.date] || 0) + d.sales * 1.1; });
+    const out = [];
+    for (let d = from; d <= to; d = addDaysStr(d, 1)) {
+      const r = byDay[d] || { date: d, wages: 0, hours: 0, sections: { foh: 0, kitchen: 0 }, people: [] };
+      const same = []; for (let k = 1; k <= 6 && same.length < 4; k++) { const hd = addDaysStr(d, -7 * k); if (hd < today && sales[hd] > 0) same.push(sales[hd]); }
+      const usual = same.length ? same.reduce((a, b) => a + b, 0) / same.length : null;
+      r.people.sort((a, b) => String(a.start).localeCompare(String(b.start)) || a.name.localeCompare(b.name));
+      out.push({ ...r, usualSales: usual, weeksUsed: same.length, wagePct: usual ? r.wages / usual : null,
+        weekday: new Date(d + 'T00:00:00Z').toLocaleDateString('en-AU', { weekday: 'long', timeZone: 'UTC' }) });
+    }
+    return { venue, from, to, pending: hist.pending || 0, days: out };
+  });
+}
 // Each item's sizes as a list, smallest first (Small, Regular, Medium, Large…), then anything else by how many sold.
 const SIZE_RANK = { small: 1, mini: 1, regular: 2, 'regular price': 2, standard: 2, medium: 3, large: 4, 'extra large': 5 };
 function finishItem(it) {
@@ -1821,6 +1895,13 @@ export default {
       } catch (e) { res.error = String(e && e.message || e); }
       res.lastLookupError = PAYRUN_MEMO.err || null;
       return json(res);
+    }
+    if (path === '/api/roster-forecast') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const venue = url.searchParams.get('venue') === 'doughgirlz' ? 'doughgirlz' : 'guncotton';
+      const days = Math.max(1, Math.min(21, parseInt(url.searchParams.get('days') || '14', 10) || 14));
+      try { return json(await rosterForecast(env, venue, days)); }
+      catch (e) { return json({ error: String(e && e.message || e) }); }
     }
     if (path === '/api/roubler-wages') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
