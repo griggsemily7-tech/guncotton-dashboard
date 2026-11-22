@@ -62,6 +62,14 @@
   .dnote{color:var(--muted);font-size:13px;padding:6px 0}
   .dhead{color:var(--muted);font-size:12px;padding:4px 0 6px}
   .crow{cursor:pointer}
+  .rhead,.rrow{display:grid;grid-template-columns:minmax(0,1fr) 54px 76px 92px 64px;column-gap:10px;align-items:baseline;font-variant-numeric:tabular-nums}
+  .rhead{padding:2px 8px;color:var(--muted);font-size:11px;letter-spacing:.04em;text-transform:uppercase}
+  .rrow{padding:9px 8px;border-bottom:1px solid rgba(255,255,255,.06);font-size:15px;cursor:pointer;border-radius:6px}
+  .rrow:hover{background:rgba(255,255,255,.08)}
+  .rhead span:not(:first-child),.rrow span:not(:first-child){text-align:right}
+  .rwho{padding:4px 8px 12px 22px;display:none}
+  .rwho .whorow{max-width:420px}
+  @media(max-width:600px){.rhead,.rrow{grid-template-columns:minmax(0,1fr) 40px 58px 70px 52px;column-gap:6px;font-size:13px}}
   .whogrid{max-width:320px;margin:2px 0}
   .whorow{display:flex;justify-content:space-between;gap:18px;padding:2px 0;color:var(--text,#e5e7eb);font-size:13px}
   .whorow.part{opacity:.45}
@@ -115,6 +123,7 @@
 </div>
 <div class="tabs">
   <div class="tab active" data-tab="dashboard">Dashboard</div>
+  <div class="tab" data-tab="roster">Roster</div>
   <div class="tab" data-tab="connections">Connections</div>
   <div class="tab" data-tab="check">Check your numbers</div>
   <div class="tab" data-tab="settings">Settings</div>
@@ -162,6 +171,10 @@
   </div>
 </div>
 
+<div id="view-roster" style="display:none">
+  <div class="sub" style="margin:4px 0 10px">Upcoming days: what the roster would cost if everyone works their rostered hours, against the usual sales for that weekday (average of its last 4 weeks). Wages include super and holiday &amp; sick pay. Tap a day to see who's on.</div>
+  <div id="rosterBody"><div style="color:var(--muted)">Loading…</div></div>
+</div>
 <div id="view-connections" style="display:none">
   <div class="conn-row"><div><b>Xero</b> — every money figure<br><span class="hint" id="acc-detail">Not connected</span></div>
     <div><span class="pill off" id="acc-pill">Not connected</span> <a class="btn" id="acc-btn" href="/auth/accounting/start">Connect</a></div></div>
@@ -553,6 +566,37 @@ async function hourlyTableHtml(date){
   rows += '<div class="hrow htotal"><span>Day</span><span>'+m(cs)+'</span><span>'+m(cw)+'</span><span>'+pct(cw,cs)+'</span><span></span><span></span></div>';
   return '<div style="margin:6px 0 10px"><div class="dhead">By hour'+(wv ? '' : ' · wages unavailable')+'</div>'+
     '<div class="hhead"><span>Hour</span><span>Sales</span><span>Wages</span><span>Wage %</span><span>Staff</span><span>Day so far</span></div>'+rows+'</div>';
+}
+
+// Roster tab: rostered wages for the next two weeks vs the usual sales for each weekday.
+async function loadRoster(){
+  const el = document.getElementById('rosterBody');
+  const venue = currentVenue;
+  el.innerHTML = '<div style="color:var(--muted)">Loading…</div>';
+  let data;
+  try { data = await fetch('/api/roster-forecast?venue='+venue+'&days=14', {cache:'no-store'}).then(r=>r.json()); }
+  catch(e){ el.innerHTML = '<div style="color:var(--muted)">Not available</div>'; return; }
+  if(venue !== currentVenue) return;
+  if(!data || data.error){ el.innerHTML = '<div style="color:var(--muted)">Roster not available'+(data && data.error ? ': '+escHtml(String(data.error).slice(0,120)) : '')+'</div>'; return; }
+  const target = parseFloat((localStorage.getItem('vd_wagetarget')||'').replace(/[^0-9.]/g,''));
+  const m = (n)=> '$'+Math.round(n).toLocaleString();
+  const fmtT = (iso)=> new Date(iso).toLocaleTimeString('en-AU',{hour:'numeric',minute:'2-digit',timeZone:'Australia/Brisbane'}).replace(' ','').toLowerCase();
+  const colour = (p)=> (p==null || isNaN(target)) ? 'inherit' : (p*100 > target ? 'var(--warn)' : 'var(--good)');
+  const week = data.days.slice(0,7), wW = week.reduce((a,d)=>a+d.wages,0), wS = week.reduce((a,d)=>a+(d.usualSales||0),0);
+  let html = '<div style="margin:0 0 12px;padding:10px 12px;border-radius:10px;background:var(--card)">Next 7 days: <b>'+m(wW)+'</b> wages against about <b>'+m(wS)+'</b> usual sales = <b style="color:'+colour(wS? wW/wS : null)+'">'+(wS ? (wW/wS*100).toFixed(1)+'%' : '–')+'</b>'+(isNaN(target)?'':' <span style="color:var(--muted)">(target '+target+'%)</span>')+'</div>';
+  html += '<div class="rhead"><span>Day</span><span>Hours</span><span>Wages</span><span>Usual sales</span><span>Wage %</span></div>';
+  html += data.days.map((d,i)=>{
+    const dt = new Date(d.date+'T00:00:00Z').toLocaleDateString('en-AU',{weekday:'short',day:'numeric',month:'short',timeZone:'UTC'});
+    const people = (d.people||[]).map(p=>'<div class="whorow"><span>'+escHtml(p.name)+(p.draft?'<em>draft</em>':'')+(p.estimated?'<em>estimated cost</em>':'')+'</span><span>'+fmtT(p.start)+' – '+fmtT(p.end)+' · '+(Math.round(p.hours*10)/10)+'h · '+m(p.cost)+'</span></div>').join('');
+    const sec = (venue==='guncotton' && d.wages>0) ? '<div class="whonote" style="margin-top:6px">Front of house '+m(d.sections.foh)+' · Kitchen '+m(d.sections.kitchen)+'</div>' : '';
+    return '<div class="rrow" data-i="'+i+'"><span>'+dt+(d.people && d.people.length ? ' <span style="color:var(--muted);font-size:12px">· '+d.people.length+(d.people.length===1?' shift':' shifts')+'</span>' : ' <span style="color:var(--muted);font-size:12px">· nobody rostered</span>')+'</span>'+
+      '<span>'+(Math.round(d.hours*10)/10)+'</span><span>'+m(d.wages)+'</span><span>'+(d.usualSales ? m(d.usualSales) : '–')+'</span>'+
+      '<span style="color:'+colour(d.wagePct)+';font-weight:700">'+(d.wagePct!=null ? (d.wagePct*100).toFixed(1)+'%' : '–')+'</span></div>'+
+      '<div class="rwho" id="rwho-'+i+'">'+(people || '<div style="color:var(--muted)">Nothing rostered yet</div>')+sec+'</div>';
+  }).join('');
+  html += '<div class="whonote" style="margin-top:10px">Usual sales = average of the same weekday over its last 4 weeks (incl. GST). Shifts marked <em style="color:var(--warn);font-style:normal">draft</em> aren\'t published yet. Public holidays and special events aren\'t allowed for.'+(data.pending ? ' Still loading some sales history – refresh in a moment.' : '')+'</div>';
+  el.innerHTML = html;
+  el.querySelectorAll('.rrow').forEach(r=>{ r.onclick = ()=>{ const b = document.getElementById('rwho-'+r.dataset.i); b.style.display = b.style.display==='block' ? 'none' : 'block'; }; });
 }
 
 async function loadDrill(row){
@@ -1197,6 +1241,7 @@ document.querySelectorAll('.venue-btn').forEach(b=>{
     localStorage.setItem('vd_venue', currentVenue);
     METRICS = METRICS_BY_VENUE[currentVenue];
     fetchData();
+    if(document.querySelector('.tab.active') && document.querySelector('.tab.active').dataset.tab==='roster') loadRoster();
   };
   if(b.dataset.venue===currentVenue) b.classList.add('active'); else b.classList.remove('active');
 });
@@ -1205,9 +1250,10 @@ document.querySelectorAll('.tab').forEach(t=>{
   t.onclick = ()=>{
     document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
     t.classList.add('active');
-    ['dashboard','connections','check','settings'].forEach(v=>{
+    ['dashboard','roster','connections','check','settings'].forEach(v=>{
       document.getElementById('view-'+v).style.display = (v===t.dataset.tab)?'block':'none';
     });
+    if(t.dataset.tab==='roster') loadRoster();
   };
 });
 
