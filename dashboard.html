@@ -431,7 +431,7 @@ setInterval(() => { if(document.visibilityState === 'visible') fetchData(true); 
 // ---- click a row to see what sold, by category (Doughgirlz / Square) ----
 const openDrills = new Set(), drillCache = {};
 const escHtml = (s)=> String(s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const drillKey = (row)=> row.dataset.date+'|'+(row.dataset.hour==null?'':row.dataset.hour)+'|'+(row.dataset.to||'');
+const drillKey = (row)=> currentVenue+'|'+row.dataset.date+'|'+(row.dataset.hour==null?'':row.dataset.hour)+'|'+(row.dataset.to||'');
 
 // Only redraw a panel when its content actually changed, so an open row isn't collapsed by the 20-second refresh.
 function setPanel(el, html){
