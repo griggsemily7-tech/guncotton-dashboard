@@ -37,10 +37,13 @@
   .prow span:nth-child(3){text-align:right;font-weight:600}
   @media(max-width:600px){.prow{grid-template-columns:minmax(0,1fr) 58px 84px;font-size:13px}}
   .drow{display:grid;grid-template-columns:100px minmax(0,1fr) 90px 120px;align-items:baseline;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.06);font-variant-numeric:tabular-nums}
+  .drow.cafe{grid-template-columns:122px minmax(0,1fr) 62px 96px 52px 52px 60px;column-gap:6px}
+  .drow.cafe span:nth-child(n+5){text-align:right;font-weight:600}
   .drow span:nth-child(2){color:var(--muted)}
   .drow span:nth-child(3){text-align:right;color:var(--muted)}
   .drow span:nth-child(4){text-align:right;font-weight:600}
   @media(max-width:600px){.drow{grid-template-columns:42px minmax(0,1fr) 56px 82px;font-size:13px}}
+  @media(max-width:600px){.drow.cafe{grid-template-columns:36px minmax(0,1fr) 38px 64px 36px 36px 42px;column-gap:3px;font-size:12px}}
   .grow{display:grid;grid-template-columns:minmax(0,1fr) 70px 90px 150px;align-items:baseline;padding:8px 0 2px;font-variant-numeric:tabular-nums}
   .grow span:nth-child(2),.grow span:nth-child(3),.grow span:nth-child(4){text-align:right}
   .grow span:nth-child(2){color:var(--text,#e5e7eb);font-weight:600}
@@ -569,6 +572,44 @@ async function hourlyTableHtml(date){
     '<div class="hhead"><span>Hour</span><span>Sales</span><span>Wages</span><span>Wage %</span><span>Staff</span><span>Day so far</span></div>'+rows+'</div>';
 }
 
+// ---- Cafe wage %: all staff / front of house / kitchen, live ----
+// All staff = every wage ÷ all sales. Front of house = front of house wages ÷ (sales without kitchen food).
+// Kitchen = kitchen wages ÷ kitchen food sales. Kitchen food sales only exist since the cafe moved to Square (17 Nov).
+const CAFE_SPLIT = {}, CAFE_CARD = {};
+async function getCafeSplit(from, to){
+  const k = from+':'+to, c = CAFE_SPLIT[k];
+  if(c && Date.now()-c.t < 30000) return c.data;
+  try{
+    const d = await fetch('/api/cafe-split?from='+from+'&to='+to, {cache:'no-store'}).then(r=>r.ok ? r.json() : null);
+    if(d && !d.error){ CAFE_SPLIT[k] = {t:Date.now(), data:d}; return d; }
+  }catch(e){}
+  return c ? c.data : null;
+}
+function splitPcts(days){
+  const sum = (a,f)=> a.reduce((t,d)=>t+(f(d)||0),0);
+  const sales = sum(days,d=>d.sales), wages = sum(days,d=>d.wages);
+  const kd = days.filter(d=>d.kitchenSales!=null), ks = sum(kd,d=>d.kitchenSales), ksales = sum(kd,d=>d.sales);
+  return { all: sales>0 ? wages/sales*100 : null,
+           foh: (ksales-ks)>0 ? sum(kd,d=>d.foh)/(ksales-ks)*100 : null,
+           kit: ks>0 ? sum(kd,d=>d.kitchenWages)/ks*100 : null };
+}
+async function fillCardSplit(){
+  const el = document.getElementById('cardSplit'); if(!el) return;
+  const key = el.dataset.range, [from,to] = key.split(':');
+  const data = await getCafeSplit(from,to);
+  const el2 = document.getElementById('cardSplit'); if(!el2 || el2.dataset.range!==key || !data) return;
+  const p = splitPcts(data.days), f = (x)=> x==null ? '–' : x.toFixed(1)+'%';
+  const target = parseFloat((localStorage.getItem('vd_wagetarget')||'').replace(/[^0-9.]/g,''));
+  const col = (x)=> (x==null || isNaN(target)) ? 'inherit' : (x > target ? 'var(--warn)' : 'var(--good)');
+  const line = (label, val, tip, c)=> '<div style="display:flex;justify-content:space-between;gap:8px" title="'+tip+'"><span>'+label+'</span><b style="color:'+(c||'inherit')+'">'+val+'</b></div>';
+  const html = '<div style="margin-top:8px;display:grid;gap:3px;font-size:13px">'+
+    line('All staff', f(p.all), 'All wages ÷ all sales', col(p.all))+
+    line('Front of house', f(p.foh), 'Front of house wages ÷ (sales without kitchen food)')+
+    line('Kitchen', f(p.kit), 'Kitchen wages ÷ kitchen food sales')+'</div>'+
+    ((p.foh==null || p.kit==null) ? '<div style="font-size:11px;color:var(--muted);margin-top:4px">Front and kitchen need Square item sales (since 17 Nov).</div>' : '');
+  CAFE_CARD[key] = html; el2.innerHTML = html;
+}
+
 // Roster tab: rostered wages for the next two weeks vs the usual sales for each weekday.
 // Cafe: three percentages: all staff vs all sales; front of house vs sales without kitchen food; kitchen vs kitchen food.
 async function loadRoster(){
@@ -867,22 +908,33 @@ async function fetchPosHours(myGen, silent){
 
 async function fetchDailySales(r, myGen, silent, period){
   const el = document.getElementById('dailySales');
+  const cafe = currentVenue==='guncotton';
+  const splitP = cafe ? getCafeSplit(r.from, r.to) : Promise.resolve(null);
   if(!silent) el.innerHTML = '<span style="color:var(--muted)">Loading…</span>';
   try{
     const res = await fetch('/api/pos-daily?venue='+currentVenue+'&from='+r.from+'&to='+r.to, {cache:'no-store'});
     if(myGen !== fetchGen) return;
     if(!res.ok){ el.innerHTML = '<span style="color:var(--muted)">Not available</span>'; return; }
     const data = await res.json();
+    const splitData = await splitP;
     if(myGen !== fetchGen) return;
     if(!data.days || !data.days.length){ el.innerHTML = '<span style="color:var(--muted)">No sales recorded for this period</span>'; return; }
+    const splitByDate = {}; ((splitData && splitData.days) || []).forEach(d=>{ splitByDate[d.date] = d; });
+    const tgt = parseFloat((localStorage.getItem('vd_wagetarget')||'').replace(/[^0-9.]/g,''));
+    // Three wage % cells (all staff / front of house / kitchen) for one day or a group of days.
+    const pctCells = (dates)=>{
+      const p = splitPcts(dates.map(d=>splitByDate[d]).filter(Boolean)), f = (x)=> x==null ? '–' : Math.round(x)+'%';
+      const c = (p.all==null || isNaN(tgt)) ? 'inherit' : (p.all > tgt ? 'var(--warn)' : 'var(--good)');
+      return '<span style="color:'+c+'">'+f(p.all)+'</span><span>'+f(p.foh)+'</span><span>'+f(p.kit)+'</span>';
+    };
     const narrow = window.innerWidth < 600;
     const mode = rowModeFor(period);
     const money = (n)=> '$'+n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
     const canDrillMode = (mode==='day' || mode==='week');
-    const row = (a,b,count,sales,date,to)=> {
+    const row = (a,b,count,sales,date,to,dates)=> {
       const canDrill = canDrillMode && (currentVenue==='doughgirlz' || !to || to >= SQUARE_NEW_FROM);   // any single day opens (hourly sales + wages); Gun Cotton week rows need Square item detail
       const attrs = (canDrill && date) ? ' drill" data-date="'+date+(to ? '" data-to="'+to : '') : '';
-      return '<div class="drow'+attrs+'"><span>'+(attrs?'<span class="chev">▸</span>':'')+a+'</span><span>'+b+'</span><span>'+count+' txns</span><span>'+money(sales*GST)+'</span></div>'+
+      return '<div class="drow'+(cafe?' cafe':'')+attrs+'"><span>'+(attrs?'<span class="chev">▸</span>':'')+a+'</span><span>'+b+'</span><span>'+count+' txns</span><span>'+money(sales*GST)+'</span>'+(cafe ? pctCells(dates||[]) : '')+'</div>'+
         (attrs ? '<div class="detail" style="display:none"></div>' : '');
     };
     let rows;
@@ -891,7 +943,7 @@ async function fetchDailySales(r, myGen, silent, period){
         const dt = new Date(d.date+'T00:00:00');
         const dayName = dt.toLocaleDateString('en-AU', {weekday: narrow ? 'short' : 'long'});
         const dateText = dt.toLocaleDateString('en-AU', narrow ? {day:'numeric',month:'short'} : {day:'numeric',month:'short',year:'numeric'});
-        return row(dayName, dateText, d.count, d.sales, d.date);
+        return row(dayName, dateText, d.count, d.sales, d.date, undefined, [d.date]);
       });
     } else {
       // Group days into Monday-to-Sunday weeks (month views) or calendar months (financial-year views).
@@ -902,8 +954,9 @@ async function fetchDailySales(r, myGen, silent, period){
         let key;
         if(mode==='week'){ const x = new Date(dt); x.setDate(x.getDate() - ((x.getDay()+6)%7)); key = fmtD(x); }
         else { key = d.date.slice(0,7); }
-        if(!byKey[key]){ byKey[key] = {key, first:d.date, last:d.date, count:0, sales:0}; groups.push(byKey[key]); }
+        if(!byKey[key]){ byKey[key] = {key, first:d.date, last:d.date, count:0, sales:0, dates:[]}; groups.push(byKey[key]); }
         const g = byKey[key];
+        g.dates.push(d.date);
         if(d.date < g.first) g.first = d.date;
         if(d.date > g.last) g.last = d.date;
         g.count += d.count; g.sales += d.sales;
@@ -913,14 +966,16 @@ async function fetchDailySales(r, myGen, silent, period){
         if(mode==='week'){
           const a = new Date(g.first+'T00:00:00').toLocaleDateString('en-AU', short);
           const b = new Date(g.last+'T00:00:00').toLocaleDateString('en-AU', short);
-          return row(narrow ? 'Wk' : 'Week of', a===b ? a : a+' – '+b, g.count, g.sales, g.first, g.last);
+          return row(narrow ? 'Wk' : 'Week of', a===b ? a : a+' – '+b, g.count, g.sales, g.first, g.last, g.dates);
         }
         const dt = new Date(g.key+'-01T00:00:00');
-        return row(dt.toLocaleDateString('en-AU', {month: narrow ? 'short' : 'long'}), dt.getFullYear(), g.count, g.sales);
+        return row(dt.toLocaleDateString('en-AU', {month: narrow ? 'short' : 'long'}), dt.getFullYear(), g.count, g.sales, undefined, undefined, g.dates);
       });
     }
     const pendingNote = data.pending>0 ? '<div style="margin-top:8px;font-size:12px;color:var(--muted)">Still loading '+data.pending+' earlier day'+(data.pending===1?'':'s')+' — totals fill in shortly.</div>' : '';
-    setPanel(el, rows.join('') + pendingNote);
+    const head = cafe ? '<div class="drow cafe" style="color:var(--muted);font-size:11px;letter-spacing:.04em;text-transform:uppercase;border-bottom:1px solid rgba(255,255,255,.14)" title="Wage % for the day: all staff ÷ all sales · front of house ÷ sales without kitchen food · kitchen ÷ kitchen food sales"><span></span><span></span><span>Txns</span><span>Sales</span><span>All</span><span>Front</span><span>Kitchen</span></div>' : '';
+    const splitNote = (cafe && splitData && splitData.pending>0) ? '<div style="margin-top:6px;font-size:12px;color:var(--muted)">Still loading kitchen food sales for '+splitData.pending+' day'+(splitData.pending===1?'':'s')+'.</div>' : '';
+    setPanel(el, head + rows.join('') + pendingNote + splitNote);
   }catch(e){ if(myGen===fetchGen) el.innerHTML = '<span style="color:var(--muted)">Not available</span>'; }
 }
 
@@ -1193,15 +1248,11 @@ function renderCards(data){
     targetLines.wagepct = (targetLines.wagepct ? targetLines.wagepct+'<br>' : '') + bits.join(' · ');
     // Gun Cotton: how much of the wage % is front of house and how much is kitchen (each as a % of sales, like the total),
     // with the change since the comparison period.
-    if (currentVenue==='guncotton' && rb.sections && revenue) {
-      const part = (sec, rev)=> (sec && rev) ? sec.wages/(rev*GST)*100 : null;
-      const f = part(rb.sections.foh, revenue), k = part(rb.sections.kitchen, revenue);
-      const pf = (prb && prb.sections && pRevenue) ? part(prb.sections.foh, pRevenue) : null, pk = (prb && prb.sections && pRevenue) ? part(prb.sections.kitchen, pRevenue) : null;
-      const delta = (now, before)=> before==null ? '' : ' <span style="color:'+(now-before > 0.05 ? 'var(--bad)' : now-before < -0.05 ? 'var(--good)' : 'var(--muted)')+'">'+(now-before > 0.05 ? '▲' : now-before < -0.05 ? '▼' : '•')+' '+Math.abs(now-before).toFixed(1)+' pts</span>';
-      const tot = (f||0)+(k||0) || 1;
-      targetLines.wagepct += '<div style="display:flex;height:7px;border-radius:4px;overflow:hidden;margin:8px 0 6px"><div style="width:'+(f/tot*100).toFixed(1)+'%;background:#3b82f6"></div><div style="width:'+(k/tot*100).toFixed(1)+'%;background:#f59e0b"></div></div>'+
-        '<div style="display:flex;justify-content:space-between;gap:8px"><span><span style="color:#3b82f6">●</span> Front of house</span><span><b>'+f.toFixed(1)+'%</b>'+delta(f,pf)+'</span></div>'+
-        '<div style="display:flex;justify-content:space-between;gap:8px"><span><span style="color:#f59e0b">●</span> Kitchen</span><span><b>'+k.toFixed(1)+'%</b>'+delta(k,pk)+'</span></div>';
+    // Cafe: three live percentages (all staff / front of house / kitchen), filled in once the day-by-day numbers arrive.
+    if (currentVenue==='guncotton') {
+      const rr = rangeFor(document.getElementById('period').value), key = rr.from+':'+rr.to;
+      targetLines.wagepct += '<div id="cardSplit" data-range="'+key+'">'+(CAFE_CARD[key] || '<div style="color:var(--muted);font-size:12px;margin-top:8px">Working out the split…</div>')+'</div>';
+      setTimeout(fillCardSplit, 0);
     }
     targetLines.wagepct += '<br><a href="#staffSection" style="color:inherit">See staff costs ↓</a>';
   }
