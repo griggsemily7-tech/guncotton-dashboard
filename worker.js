@@ -753,7 +753,7 @@ function spreadHourly(map, r, total, day) {
 }
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw39:' + from + ':' + to, incToday ? 60 : 3600, async () => {   // today refreshes every minute, so an early clock-out shows up quickly
+  return cached(env, 'rbw40:' + from + ':' + to, incToday ? 60 : 3600, async () => {   // today refreshes every minute, so an early clock-out shows up quickly
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
@@ -871,7 +871,7 @@ async function roublerWages(env, from, to) {
     const out = { doughgirlz: blank(), guncotton: { ...blank(), sections: { foh: blank(), kitchen: blank() } } };
     // First pass: each counted shift's base cost, its day and week, so under-18s' weekly hours are known.
     const counted = [], weekHrs = {}, people = {}, notClocked = {};
-    const single = from === to ? from : null, hourlyAgg = {};   // one day: also work out wages hour by hour
+    const single = from === to ? from : null, hourlyAgg = {}, dailyAgg = {};   // one day: also work out wages hour by hour; every period: wages per day
     const weekOf = (dateStr) => { const d = new Date(dateStr + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.toISOString().slice(0, 10); };
     rows.forEach((r) => {
       const id = r.employee && r.employee.id;
@@ -919,6 +919,7 @@ async function roublerWages(env, from, to) {
       add(out[cls.venue]);
       if (cls.venue === 'guncotton') add(out.guncotton.sections[cls.section]);
       if (single) spreadHourly(hourlyAgg[cls.venue] || (hourlyAgg[cls.venue] = {}), r, total, single);
+      { const dv = dailyAgg[cls.venue] || (dailyAgg[cls.venue] = {}), dd = dv[day] || (dv[day] = { date: day, wages: 0, foh: 0, kitchen: 0 }); dd.wages += total; if (cls.section) dd[cls.section] += total; }
       // Per-person totals for the staff breakdown on the Wage % card (kept only as long as the totals are).
       const ppl = people[cls.venue] || (people[cls.venue] = {});
       const pr = ppl[id] || (ppl[id] = { name: (r.employee && r.employee.fullName || 'Unknown').replace(/\s+/g, ' ').trim(), hours: 0, cost: 0, base: 0, sup: 0, leave: 0, salaried, estimated: false, sections: {} });
@@ -932,6 +933,7 @@ async function roublerWages(env, from, to) {
       if (r.kind === 'timesheet' && (r.hours || 0) > 12) pr.longShift = (pr.longShift || 0) + 1;   // probably forgot to clock out
       if (est) pr.estimated = true; if (cls.section) pr.sections[cls.section] = true;
     });
+    Object.keys(dailyAgg).forEach((v) => { out[v].daily = Object.values(dailyAgg[v]).sort((a, b) => a.date.localeCompare(b.date)); });
     Object.keys(hourlyAgg).forEach((v) => { out[v].hourly = Object.entries(hourlyAgg[v]).map(([h, x]) => ({ hour: +h, wages: x.wages, hours: x.hours, people: staffCount(x), part: staffPart(x), who: staffWho(x) })).sort((a, b) => a.hour - b.hour); });
     Object.keys(notClocked).forEach((v) => { out[v].notClockedIn = Object.entries(notClocked[v]).map(([name, hours]) => ({ name, hours })); });
     Object.keys(people).forEach((v) => {
@@ -1912,6 +1914,30 @@ export default {
       } catch (e) { res.error = String(e && e.message || e); }
       res.lastLookupError = PAYRUN_MEMO.err || null;
       return json(res);
+    }
+    // Cafe, live: for each day, sales, kitchen food sales and wages (front of house / kitchen), for the three percentages.
+    if (path === '/api/cafe-split') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const from = url.searchParams.get('from'), to = url.searchParams.get('to');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(from || '') || !/^\d{4}-\d{2}-\d{2}$/.test(to || '') || to < from) return json({ error: 'bad range' }, 400);
+      try {
+        const today = toBrisbane(new Date()).dateStr;
+        const res = await cached(env, 'cs2:' + from + ':' + to, to >= today ? 60 : 600, async () => {
+          const budget = { left: 6 };
+          const [wr, sales] = await Promise.all([roublerWages(env, from, to), gcDaily(env, from, to, budget)]);
+          const kitchen = {}; let kPending = 0;
+          if (env.POS_API_TOKEN_2 && to >= SQUARE_NEW_FROM) {
+            const kd = await squareCategoryDays(env, from > SQUARE_NEW_FROM ? from : SQUARE_NEW_FROM, to, { left: 4 }, 'guncotton');
+            kPending = kd.pending || 0;
+            kd.days.forEach((d) => { kitchen[d.date] = Object.entries(d.cats || {}).reduce((a, [n, c]) => a + (KITCHEN_FOOD_RE.test(n) ? (c.gross || 0) : 0), 0); });
+          }
+          const wd = {}; ((wr && wr.guncotton && wr.guncotton.daily) || []).forEach((d) => { wd[d.date] = d; });
+          const days = sales.days.map((d) => ({ date: d.date, sales: d.sales * 1.1, kitchenSales: kitchen[d.date] != null ? kitchen[d.date] : null,
+            wages: (wd[d.date] && wd[d.date].wages) || 0, foh: (wd[d.date] && wd[d.date].foh) || 0, kitchenWages: (wd[d.date] && wd[d.date].kitchen) || 0 }));
+          return { from, to, pending: (sales.pending || 0) + kPending, days };
+        });
+        return json(res);
+      } catch (e) { return json({ error: String(e && e.message || e) }); }
     }
     if (path === '/api/roster-forecast') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
