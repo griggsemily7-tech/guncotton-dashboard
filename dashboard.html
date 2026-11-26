@@ -67,6 +67,7 @@
   .rrow{padding:9px 8px;border-bottom:1px solid rgba(255,255,255,.06);font-size:15px;cursor:pointer;border-radius:6px}
   .rrow:hover{background:rgba(255,255,255,.08)}
   .rhead span:not(:first-child),.rrow span:not(:first-child){text-align:right}
+  .rhead.cafe,.rrow.cafe{grid-template-columns:minmax(0,1fr) 70px 78px 70px 70px}
   .rwho{padding:4px 8px 12px 22px;display:none}
   .rwho .whorow{max-width:420px}
   @media(max-width:600px){.rhead,.rrow{grid-template-columns:minmax(0,1fr) 40px 58px 70px 52px;column-gap:6px;font-size:13px}}
@@ -569,9 +570,10 @@ async function hourlyTableHtml(date){
 }
 
 // Roster tab: rostered wages for the next two weeks vs the usual sales for each weekday.
+// Cafe: three percentages: all staff vs all sales; front of house vs sales without kitchen food; kitchen vs kitchen food.
 async function loadRoster(){
   const el = document.getElementById('rosterBody');
-  const venue = currentVenue;
+  const venue = currentVenue, cafe = venue==='guncotton';
   el.innerHTML = '<div style="color:var(--muted)">Loading…</div>';
   let data;
   try { data = await fetch('/api/roster-forecast?venue='+venue+'&days=14', {cache:'no-store'}).then(r=>r.json()); }
@@ -580,21 +582,38 @@ async function loadRoster(){
   if(!data || data.error){ el.innerHTML = '<div style="color:var(--muted)">Roster not available'+(data && data.error ? ': '+escHtml(String(data.error).slice(0,120)) : '')+'</div>'; return; }
   const target = parseFloat((localStorage.getItem('vd_wagetarget')||'').replace(/[^0-9.]/g,''));
   const m = (n)=> '$'+Math.round(n).toLocaleString();
+  const pc = (p)=> p==null ? '–' : (p*100).toFixed(1)+'%';
   const fmtT = (iso)=> new Date(iso).toLocaleTimeString('en-AU',{hour:'numeric',minute:'2-digit',timeZone:'Australia/Brisbane'}).replace(' ','').toLowerCase();
   const colour = (p)=> (p==null || isNaN(target)) ? 'inherit' : (p*100 > target ? 'var(--warn)' : 'var(--good)');
-  const week = data.days.slice(0,7), wW = week.reduce((a,d)=>a+d.wages,0), wS = week.reduce((a,d)=>a+(d.usualSales||0),0);
-  let html = '<div style="margin:0 0 12px;padding:10px 12px;border-radius:10px;background:var(--card)">Next 7 days: <b>'+m(wW)+'</b> wages against about <b>'+m(wS)+'</b> usual sales = <b style="color:'+colour(wS? wW/wS : null)+'">'+(wS ? (wW/wS*100).toFixed(1)+'%' : '–')+'</b>'+(isNaN(target)?'':' <span style="color:var(--muted)">(target '+target+'%)</span>')+'</div>';
-  html += '<div class="rhead"><span>Day</span><span>Hours</span><span>Wages</span><span>Usual sales</span><span>Wage %</span></div>';
+  const week = data.days.slice(0,7), sum = (a,f)=>a.reduce((t,d)=>t+(f(d)||0),0);
+  const wAll = sum(week,d=>d.wages), sAll = sum(week,d=>d.usualSales);
+  let html;
+  if(cafe){
+    const wk = week.filter(d=>d.usualKitchen!=null && d.usualKitchen>0);
+    const fohP = wk.length ? sum(wk,d=>d.fohWages)/sum(wk,d=>d.usualNoKitchen) : null, kitP = wk.length ? sum(wk,d=>d.kitchenWages)/sum(wk,d=>d.usualKitchen) : null;
+    html = '<div style="margin:0 0 12px;padding:10px 12px;border-radius:10px;background:var(--card);line-height:1.7">Next 7 days<br>'+
+      '<b style="color:'+colour(sAll? wAll/sAll : null)+'">'+pc(sAll? wAll/sAll : null)+'</b> all staff ('+m(wAll)+' of about '+m(sAll)+' sales)'+(isNaN(target)?'':' <span style="color:var(--muted)">target '+target+'%</span>')+'<br>'+
+      '<b>'+pc(fohP)+'</b> front of house (against sales without kitchen food)<br><b>'+pc(kitP)+'</b> kitchen (against kitchen food sales)</div>';
+    html += '<div class="rhead cafe"><span>Day</span><span>Wages</span><span>All staff</span><span>Front</span><span>Kitchen</span></div>';
+  } else {
+    html = '<div style="margin:0 0 12px;padding:10px 12px;border-radius:10px;background:var(--card)">Next 7 days: <b>'+m(wAll)+'</b> wages against about <b>'+m(sAll)+'</b> usual sales = <b style="color:'+colour(sAll? wAll/sAll : null)+'">'+pc(sAll? wAll/sAll : null)+'</b>'+(isNaN(target)?'':' <span style="color:var(--muted)">(target '+target+'%)</span>')+'</div>';
+    html += '<div class="rhead"><span>Day</span><span>Hours</span><span>Wages</span><span>Usual sales</span><span>Wage %</span></div>';
+  }
   html += data.days.map((d,i)=>{
     const dt = new Date(d.date+'T00:00:00Z').toLocaleDateString('en-AU',{weekday:'short',day:'numeric',month:'short',timeZone:'UTC'});
-    const people = (d.people||[]).map(p=>'<div class="whorow"><span>'+escHtml(p.name)+(p.draft?'<em>draft</em>':'')+(p.estimated?'<em>estimated cost</em>':'')+'</span><span>'+fmtT(p.start)+' – '+fmtT(p.end)+' · '+(Math.round(p.hours*10)/10)+'h · '+m(p.cost)+'</span></div>').join('');
-    const sec = (venue==='guncotton' && d.wages>0) ? '<div class="whonote" style="margin-top:6px">Front of house '+m(d.sections.foh)+' · Kitchen '+m(d.sections.kitchen)+'</div>' : '';
-    return '<div class="rrow" data-i="'+i+'"><span>'+dt+(d.people && d.people.length ? ' <span style="color:var(--muted);font-size:12px">· '+d.people.length+(d.people.length===1?' shift':' shifts')+'</span>' : ' <span style="color:var(--muted);font-size:12px">· nobody rostered</span>')+'</span>'+
-      '<span>'+(Math.round(d.hours*10)/10)+'</span><span>'+m(d.wages)+'</span><span>'+(d.usualSales ? m(d.usualSales) : '–')+'</span>'+
-      '<span style="color:'+colour(d.wagePct)+';font-weight:700">'+(d.wagePct!=null ? (d.wagePct*100).toFixed(1)+'%' : '–')+'</span></div>'+
-      '<div class="rwho" id="rwho-'+i+'">'+(people || '<div style="color:var(--muted)">Nothing rostered yet</div>')+sec+'</div>';
+    const people = (d.people||[]).map(p=>'<div class="whorow"><span>'+escHtml(p.name)+(cafe && p.section ? '<em style="color:var(--muted)">'+(p.section==='kitchen'?'kitchen':'front')+'</em>' : '')+(p.draft?'<em>draft</em>':'')+(p.estimated?'<em>estimated cost</em>':'')+'</span><span>'+fmtT(p.start)+' – '+fmtT(p.end)+' · '+(Math.round(p.hours*10)/10)+'h · '+m(p.cost)+'</span></div>').join('');
+    const who = d.people && d.people.length ? ' <span style="color:var(--muted);font-size:12px">· '+d.people.length+(d.people.length===1?' shift':' shifts')+'</span>' : ' <span style="color:var(--muted);font-size:12px">· nobody rostered</span>';
+    let cells, extra = '';
+    if(cafe){
+      cells = '<span>'+m(d.wages)+'</span><span style="color:'+colour(d.wagePct)+';font-weight:700">'+pc(d.wagePct)+'</span><span>'+pc(d.fohPct)+'</span><span>'+pc(d.kitchenPct)+'</span>';
+      extra = '<div class="whonote" style="margin:0 0 8px">Usual sales '+(d.usualSales? m(d.usualSales):'–')+' · usual kitchen food '+(d.usualKitchen!=null? m(d.usualKitchen):'not enough history yet')+' · front of house wages '+m(d.fohWages)+' · kitchen wages '+m(d.kitchenWages)+'</div>';
+    } else {
+      cells = '<span>'+(Math.round(d.hours*10)/10)+'</span><span>'+m(d.wages)+'</span><span>'+(d.usualSales ? m(d.usualSales) : '–')+'</span><span style="color:'+colour(d.wagePct)+';font-weight:700">'+pc(d.wagePct)+'</span>';
+    }
+    return '<div class="rrow'+(cafe?' cafe':'')+'" data-i="'+i+'"><span>'+dt+who+'</span>'+cells+'</div>'+
+      '<div class="rwho" id="rwho-'+i+'">'+extra+(people || '<div style="color:var(--muted)">Nothing rostered yet</div>')+'</div>';
   }).join('');
-  html += '<div class="whonote" style="margin-top:10px">Usual sales = average of the same weekday over its last 4 weeks (incl. GST). Shifts marked <em style="color:var(--warn);font-style:normal">draft</em> aren\'t published yet. Public holidays and special events aren\'t allowed for.'+(data.pending ? ' Still loading some sales history – refresh in a moment.' : '')+'</div>';
+  html += '<div class="whonote" style="margin-top:10px">Usual sales = average of the same weekday over its last 4 weeks (incl. GST). '+(cafe ? 'Kitchen food sales come from the cafe\'s Square categories (Kitchen Food, Kids Food and similar), so the front and kitchen percentages use only the days since the cafe moved to Square on 17 Nov. ' : '')+'Shifts marked <em style="color:var(--warn);font-style:normal">draft</em> aren\'t published yet. Public holidays and special events aren\'t allowed for.'+(data.pending ? ' Still loading some sales history – refresh in a moment.' : '')+'</div>';
   el.innerHTML = html;
   el.querySelectorAll('.rrow').forEach(r=>{ r.onclick = ()=>{ const b = document.getElementById('rwho-'+r.dataset.i); b.style.display = b.style.display==='block' ? 'none' : 'block'; }; });
 }
