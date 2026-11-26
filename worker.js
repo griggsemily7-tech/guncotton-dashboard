@@ -950,9 +950,11 @@ async function roublerEmployeeList(env, token) {
   const v = await roublerGraphQL(env, { operationName: 'Emp', query: 'query Emp { employees { id fullName payBasis payType payLevel { id name } position { name } person { dateOfBirth } } }' }, {}, token);
   ROUBLER_EMP_MEMO.v = v; ROUBLER_EMP_MEMO.t = Date.now(); return v;
 }
+// Square categories at the cafe that count as kitchen food sales (what the kitchen makes). Change this list if the cafe's categories change.
+const KITCHEN_FOOD_RE = /kitchen|kids?\s*food|^food$|breakfast|lunch|dinner|all\s*day|special|^sides?$|focaccia|smoothie\s*bowl|open\s*food/i;
 async function rosterForecast(env, venue, days) {
   const today = toBrisbane(new Date()).dateStr, from = addDaysStr(today, 1), to = addDaysStr(today, days);
-  return cached(env, 'rfc2:' + venue + ':' + from + ':' + days, 300, async () => {
+  return cached(env, 'rfc3:' + venue + ':' + from + ':' + days, 300, async () => {
     const token = await roublerRefresh(env);
     const [empRes, shRes] = await Promise.all([
       roublerEmployeeList(env, token),
@@ -1006,16 +1008,31 @@ async function rosterForecast(env, venue, days) {
     let hist = { days: [], pending: 0 };
     try { hist = venue === 'guncotton' ? await gcDaily(env, hFrom, hTo, budget) : await squareDailySummary(env, hFrom, hTo, budget, 'doughgirlz'); } catch (e) {}
     const sales = {}; hist.days.forEach((d) => { sales[d.date] = (sales[d.date] || 0) + d.sales * 1.1; });
+    // Cafe only: kitchen food sales per day (from Square's categories, so only from the day the cafe moved to Square).
+    const kitchen = {}; let kPending = 0;
+    if (venue === 'guncotton' && env.POS_API_TOKEN_2) {
+      try {
+        const kd = await squareCategoryDays(env, hFrom > SQUARE_NEW_FROM ? hFrom : SQUARE_NEW_FROM, hTo, { left: 12 }, 'guncotton');
+        kPending = kd.pending || 0;
+        kd.days.forEach((d) => { kitchen[d.date] = Object.entries(d.cats || {}).reduce((a, [n, c]) => a + (KITCHEN_FOOD_RE.test(n) ? (c.gross || 0) : 0), 0); });
+      } catch (e) {}
+    }
     const out = [];
     for (let d = from; d <= to; d = addDaysStr(d, 1)) {
       const r = byDay[d] || { date: d, wages: 0, hours: 0, sections: { foh: 0, kitchen: 0 }, people: [] };
       const same = []; for (let k = 1; k <= 6 && same.length < 4; k++) { const hd = addDaysStr(d, -7 * k); if (hd < today && sales[hd] > 0) same.push(sales[hd]); }
       const usual = same.length ? same.reduce((a, b) => a + b, 0) / same.length : null;
       r.people.sort((a, b) => String(a.start).localeCompare(String(b.start)) || a.name.localeCompare(b.name));
+      // Three roster percentages (cafe): everyone vs all sales; front of house vs sales without kitchen food; kitchen vs kitchen food.
+      const kDates = []; for (let k = 1; k <= 6 && kDates.length < 4; k++) { const hd = addDaysStr(d, -7 * k); if (hd < today && sales[hd] > 0 && kitchen[hd] != null) kDates.push(hd); }
+      const usualKitchen = kDates.length ? kDates.reduce((a, hd) => a + kitchen[hd], 0) / kDates.length : null;
+      const usualNoKitchen = kDates.length ? kDates.reduce((a, hd) => a + (sales[hd] - kitchen[hd]), 0) / kDates.length : null;
       out.push({ ...r, usualSales: usual, weeksUsed: same.length, wagePct: usual ? r.wages / usual : null,
+        usualKitchen, usualNoKitchen, kitchenWeeks: kDates.length, fohWages: r.sections.foh, kitchenWages: r.sections.kitchen,
+        fohPct: usualNoKitchen > 0 ? r.sections.foh / usualNoKitchen : null, kitchenPct: usualKitchen > 0 ? r.sections.kitchen / usualKitchen : null,
         weekday: new Date(d + 'T00:00:00Z').toLocaleDateString('en-AU', { weekday: 'long', timeZone: 'UTC' }) });
     }
-    return { venue, from, to, pending: hist.pending || 0, days: out };
+    return { venue, from, to, pending: (hist.pending || 0) + kPending, days: out };
   });
 }
 // Each item's sizes as a list, smallest first (Small, Regular, Medium, Large…), then anything else by how many sold.
