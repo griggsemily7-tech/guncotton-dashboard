@@ -1183,7 +1183,7 @@ function renderCards(data){
   const rb = rbOk ? data.roubler.cur[currentVenue] : null;
   const prb = rbOk && data.roubler.prev ? data.roubler.prev[currentVenue] : null;
   // Wage % is worked out on revenue INCLUDING GST (what the till took); cost of goods % stays on revenue ex-GST.
-  const wagepct = (rb && revenue) ? (rb.wages/(revenue*GST)) : (acc && revenue) ? (acc.wagesSuper/(revenue*GST)) : null;
+  const wagepct = (rb && revenue) ? (rb.wages/(revenue*GST)) : (acc && acc.wagesSuper!=null && revenue) ? (acc.wagesSuper/(revenue*GST)) : null;
   const overheads = acc ? acc.overheads : null;
   const profit = acc ? (revenue - acc.cogs - acc.wagesSuper - acc.overheads) : null;
 
@@ -1191,7 +1191,7 @@ function renderCards(data){
   const pAcc = prev.accounting;
   const pRevenue = data.prevSameTime!=null ? data.prevSameTime : (pAcc ? pAcc.revenue : null);
   const sameTimeMode = data.prevSameTime!=null; // costs can't be matched by time of day, so profit/wage badges are left off
-  const pWagepct = (rb && prb && pRevenue) ? (prb.wages/(pRevenue*GST)) : (!rb && pAcc && pRevenue) ? (pAcc.wagesSuper/(pRevenue*GST)) : null;
+  const pWagepct = (rb && prb && pRevenue) ? (prb.wages/(pRevenue*GST)) : (!rb && pAcc && pAcc.wagesSuper!=null && pRevenue) ? (pAcc.wagesSuper/(pRevenue*GST)) : null;
   const pProfit = pAcc ? (pRevenue - pAcc.cogs - pAcc.wagesSuper - pAcc.overheads) : null;
 
   const prevLabel = data.prevLabel || 'vs last period';
