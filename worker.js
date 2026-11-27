@@ -1475,6 +1475,9 @@ async function slot(env, from, to, trackingIdsList, venue, budget) {
     out.accounting = await cached(env, key, to >= today ? 300 : 3600, () => xeroPLCombined(env, from, to, trackingIdsList));
     await noteSync(env, 'accounting');
   } catch (e) { out.accountingError = String(e && e.message || e); }
+  // Revenue comes from the till (Bepoz / Square), not Xero. If Xero doesn't answer (rate limit, login expired), the cards
+  // still need a place for revenue, so use an empty record where the Xero-only costs are marked unavailable.
+  if (!out.accounting) out.accounting = { revenue: 0, cogs: null, wagesSuper: null, overheads: null, wageLabels: [], xeroFailed: true };
   if (venue === 'guncotton') {
     try {
       // Bepoz up to the switch, then the new Square account (see SQUARE_NEW_FROM).
@@ -1495,6 +1498,7 @@ async function slot(env, from, to, trackingIdsList, venue, budget) {
       if (venue === 'doughgirlz' && out.accounting) out.accounting.revenue = out.pos.salesExGst;
     } catch (e) {}
   }
+  if (out.accounting && out.accounting.xeroFailed && !out.pos) out.accounting = null;
   return out;
 }
 /* ---------------- Bepoz hourly sales report parsing ---------------- */
