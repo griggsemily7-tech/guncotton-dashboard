@@ -630,7 +630,7 @@ function roublerClassify(locName, posName, mainPos, empName) {
   if (ROUBLER_DIRECTORS.includes(who)) return null;
   if (/roast/i.test(pos) || /roast/i.test(main) || /roastery/i.test(loc)) return null;
   // Anything labelled Dough Girlz / DG / Bakehouse (including the DG Bakehouse chefs) is Doughgirlz.
-  if (/dough\s*girl|\bDG\b|bakehouse/i.test(loc + ' ' + pos)) return { venue: 'doughgirlz', section: null };
+  if (/dough\s*girl|\bDG\b|bakehouse|\bcart\b/i.test(loc + ' ' + pos)) return { venue: 'doughgirlz', section: null };
   // Everything else is Gun Cotton cafe: kitchen (chefs, cooks, kitchen hands, dishes) or front of house.
   // "Cold Drinks/dishes" is a front of house job (even though it mentions dishes). Dishes done round the back
   // ("Kitchen Hand/Dishes", "Dishes") count as kitchen.
@@ -680,6 +680,55 @@ function applyTimeOverrides(rows) {
     const a = Math.max(st, w0), b = Math.min(en, w1), other = o.otherwise;
     if (!(b > a)) { piece(st, en, other); return; }
     piece(st, a, other); piece(a, b, { venue: o.venue, section: o.section || null }); piece(b, en, other);
+  });
+  return out;
+}
+// ---- Cart break cover ----
+// A shift on the Cart (e.g. "Cart 8-11, break cover") is Doughgirlz for those hours only. The rest of that person's day
+// (until they clock off) counts at their normal place, which for the cafe is front of house. The Cart hours come from the
+// shift itself, or from a time range written in its location/position name ("Cart 8-11").
+const CART_RE = /\bcart\b/i;
+function cartTimeRange(text, day) {
+  const m = String(text || '').match(/(\d{1,2})(?::?(\d{2}))?\s*(am|pm)?\s*(?:-|–|—|to)\s*(\d{1,2})(?::?(\d{2}))?\s*(am|pm)?/i);
+  if (!m) return null;
+  const to24 = (h, mi, ap) => { h = +h; if (ap) { ap = ap.toLowerCase(); if (ap === 'pm' && h < 12) h += 12; if (ap === 'am' && h === 12) h = 0; } return h * 60 + (mi ? +mi : 0); };
+  let a = to24(m[1], m[2], m[3]), b = to24(m[4], m[5], m[6]);
+  if (!m[3] && !m[6] && b <= a) b += 12 * 60;   // "11-1" means 11am to 1pm
+  if (!(b > a) || b > 24 * 60) return null;
+  const at = (mins) => new Date(day + 'T' + String(Math.floor(mins / 60)).padStart(2, '0') + ':' + String(mins % 60).padStart(2, '0') + ':00+10:00').getTime();
+  return [at(a), at(b)];
+}
+const isCartRow = (r) => CART_RE.test(((r.location && r.location.name) || '') + ' ' + ((r.position && r.position.name) || ''));
+function cartWindowsFrom(shifts) {
+  const w = {};
+  (shifts || []).forEach((x) => {
+    if (!x || !x.employee || x.published === false || !isCartRow(x)) return;
+    const day = toBrisbane(new Date(x.startTime)).dateStr;
+    const txt = ((x.location && x.location.name) || '') + ' ' + ((x.position && x.position.name) || '');
+    const win = cartTimeRange(txt, day) || [new Date(x.startTime).getTime(), new Date(x.endTime).getTime()];
+    if (!(win[1] > win[0])) return;
+    (w[String(x.employee.id) + '|' + day] = w[String(x.employee.id) + '|' + day] || []).push(win);
+  });
+  return w;
+}
+// Splits each row of a person who has Cart hours that day: the Cart hours go to Doughgirlz, the rest to outFor(row).
+function applyCartSplit(rows, windows, outFor) {
+  const out = [], now = Date.now();
+  rows.forEach((r) => {
+    const id = r.employee && String(r.employee.id), day = toBrisbane(new Date(r.startTime)).dateStr;
+    const w = id && windows[id + '|' + day];
+    const st = new Date(r.startTime).getTime(), en = r.endTime ? new Date(r.endTime).getTime() : 0;
+    if (!w || !w.length || !(en > st)) { out.push(r); return; }
+    const cuts = [st, en];
+    w.forEach(([a, b]) => { if (a > st && a < en) cuts.push(a); if (b > st && b < en) cuts.push(b); });
+    cuts.sort((a, b) => a - b);
+    const rest = outFor(r);
+    for (let k = 0; k < cuts.length - 1; k++) {
+      const a = cuts[k], b = cuts[k + 1]; if (!(b > a)) continue;
+      const mid = (a + b) / 2, inside = w.some(([x, y]) => mid >= x && mid < y), share = (b - a) / (en - st);
+      out.push({ ...r, startTime: new Date(a).toISOString(), endTime: new Date(b).toISOString(), hours: (r.hours || 0) * share, cost: r.cost == null ? null : r.cost * share,
+        frac: r.kind === 'shift' ? Math.max(0, Math.min(1, (now - a) / (b - a))) : r.frac, _ov: inside ? { venue: 'doughgirlz', section: null } : rest });
+    }
   });
   return out;
 }
@@ -753,7 +802,7 @@ function spreadHourly(map, r, total, day) {
 }
 async function roublerWages(env, from, to) {
   const incToday = to >= toBrisbane(new Date()).dateStr;
-  return cached(env, 'rbw40:' + from + ':' + to, incToday ? 60 : 3600, async () => {   // today refreshes every minute, so an early clock-out shows up quickly
+  return cached(env, 'rbw41:' + from + ':' + to, incToday ? 60 : 3600, async () => {   // today refreshes every minute, so an early clock-out shows up quickly
     const token = await roublerRefresh(env);
     const today = toBrisbane(new Date()).dateStr;
     const start = from + 'T00:00:00+10:00', end = to + 'T23:59:59+10:00';
@@ -851,6 +900,14 @@ async function roublerWages(env, from, to) {
         });
       });
       rows = kept;
+    }
+    // Cart break cover: Cart hours count at Doughgirlz, the rest of that person's day at their normal place.
+    {
+      const cartW = cartWindowsFrom([...((shRes && shRes.data && shRes.data.shifts) || []), ...((roster && roster.data && roster.data.shifts) || [])]);
+      rows = applyCartSplit(rows, cartW, (r) => {
+        const c = isCartRow(r) ? null : roublerClassify(r.location && r.location.name, r.position && r.position.name, mainPos[r.employee && r.employee.id], r.employee && r.employee.fullName);
+        return c || { venue: 'guncotton', section: 'foh' };
+      });
     }
     rows = rows.filter((r) => !notWorkedOn(r.employee && r.employee.fullName, toBrisbane(new Date(r.startTime)).dateStr));
     rows = applyTimeOverrides(rows);
@@ -956,7 +1013,7 @@ async function roublerEmployeeList(env, token) {
 const KITCHEN_FOOD_RE = /kitchen|kids?\s*food|^food$|breakfast|lunch|dinner|all\s*day|special|^sides?$|focaccia|smoothie\s*bowl|open\s*food/i;
 async function rosterForecast(env, venue, days) {
   const today = toBrisbane(new Date()).dateStr, from = addDaysStr(today, 1), to = addDaysStr(today, days);
-  return cached(env, 'rfc3:' + venue + ':' + from + ':' + days, 300, async () => {
+  return cached(env, 'rfc4:' + venue + ':' + from + ':' + days, 300, async () => {
     const token = await roublerRefresh(env);
     const [empRes, shRes] = await Promise.all([
       roublerEmployeeList(env, token),
@@ -975,11 +1032,12 @@ async function rosterForecast(env, venue, days) {
     const weekOf = (dateStr) => { const d = new Date(dateStr + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.toISOString().slice(0, 10); };
     // The shifts that belong to this venue, with where each person works.
     const shifts = [];
-    ((shRes && shRes.data && shRes.data.shifts) || []).forEach((x) => {
-      if (!x.employee || !(x.hours > 0)) return;
+    let rawShifts = ((shRes && shRes.data && shRes.data.shifts) || []).filter((x) => x.employee && x.hours > 0 && (() => { const d = toBrisbane(new Date(x.startTime)).dateStr; return d >= from && d <= to; })());
+    // Cart break cover: Cart hours are Doughgirlz, the rest of that shift is the person's normal place.
+    rawShifts = applyCartSplit(rawShifts, cartWindowsFrom(rawShifts), (r) => (isCartRow(r) ? null : roublerClassify(r.location && r.location.name, r.position && r.position.name, mainPos[r.employee.id], r.employee.fullName)) || { venue: 'guncotton', section: 'foh' });
+    rawShifts.forEach((x) => {
       const day = toBrisbane(new Date(x.startTime)).dateStr;
-      if (day < from || day > to) return;
-      const cls = roublerClassify(x.location && x.location.name, x.position && x.position.name, mainPos[x.employee.id], x.employee.fullName);
+      const cls = x._ov || roublerClassify(x.location && x.location.name, x.position && x.position.name, mainPos[x.employee.id], x.employee.fullName);
       if (!cls || cls.venue !== venue) return;
       shifts.push({ x, day, cls });
     });
@@ -1941,6 +1999,25 @@ export default {
           return { from, to, pending: (sales.pending || 0) + kPending, days };
         });
         return json(res);
+      } catch (e) { return json({ error: String(e && e.message || e) }); }
+    }
+    // Read-only: how a person's shifts and timesheets are recorded in Roubler (location / position names and times),
+    // to see exactly how "Cart" shifts appear. Names are matched by part of the name: ?name=emily&days=14
+    if (path === '/api/roster-names-check') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const q = String(url.searchParams.get('name') || '').toLowerCase().trim(), days = Math.min(30, parseInt(url.searchParams.get('days') || '14', 10) || 14);
+      if (!q) return json({ error: 'add ?name=emily to the address' }, 400);
+      try {
+        const token = await roublerRefresh(env), today = toBrisbane(new Date()).dateStr;
+        const bt = (iso) => new Date(new Date(iso).getTime() + 10 * 3600000).toISOString().slice(0, 16).replace('T', ' ');
+        const [sh, ts] = await Promise.all([
+          roublerGraphQL(env, { operationName: 'Cn', query: 'query Cn($s: DateTime!, $e: DateTime!) { shifts(startTime: $s, endTime: $e) { startTime endTime published employee { fullName } location { name } position { name } } }' }, { s: addDaysStr(today, -days) + 'T00:00:00+10:00', e: addDaysStr(today, days) + 'T23:59:59+10:00' }, token),
+          roublerGraphQL(env, { operationName: 'Cm', query: 'query Cm($s: DateTime!, $e: DateTime!) { timesheets(startTime: $s, endTime: $e, includePending: true) { startTime endTime employee { fullName } location { name } position { name } } }' }, { s: addDaysStr(today, -days) + 'T00:00:00+10:00', e: today + 'T23:59:59+10:00' }, token)
+        ]);
+        const mine = (a) => (a || []).filter((x) => x.employee && String(x.employee.fullName || '').toLowerCase().includes(q));
+        const fmt = (x, extra) => ({ when: bt(x.startTime) + ' to ' + bt(x.endTime).slice(11), location: x.location && x.location.name, position: x.position && x.position.name, ...extra });
+        return json({ rostered: mine(sh && sh.data && sh.data.shifts).map((x) => fmt(x, { published: x.published })).sort((a, b) => a.when.localeCompare(b.when)),
+                      timesheets: mine(ts && ts.data && ts.data.timesheets).map((x) => fmt(x)).sort((a, b) => a.when.localeCompare(b.when)) });
       } catch (e) { return json({ error: String(e && e.message || e) }); }
     }
     if (path === '/api/roster-forecast') {
